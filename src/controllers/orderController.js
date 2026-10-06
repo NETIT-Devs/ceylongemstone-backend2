@@ -7,14 +7,24 @@ exports.createOrder = async (req, res) => {
       user_id,
       order_number,
       total_amount,
+      shipping_cost,
       currency,
       shipping_address
     } = req.body;
 
-    if (!user_id || !order_number || !total_amount || !currency || !shipping_address) {
+    // Validate required fields
+    if (
+      !user_id ||
+      !order_number ||
+      !total_amount ||
+      shipping_cost === undefined ||
+      !currency ||
+      !shipping_address
+    ) {
       return res.status(400).json({
         success: false,
-        message: "user_id, order_number, total_amount, currency and shipping_address are required"
+        message:
+          "user_id, order_number, total_amount, shipping_cost, currency and shipping_address are required"
       });
     }
 
@@ -44,14 +54,26 @@ exports.createOrder = async (req, res) => {
       });
     }
 
+    // Create order
     const [result] = await db.query(
       `INSERT INTO orders
-       (user_id, order_number, total_amount, currency, shipping_address, payment_status, order_status, created_at)
-       VALUES (?, ?, ?, ?, ?, 'PENDING', 'PENDING', NOW())`,
+      (
+        user_id,
+        order_number,
+        total_amount,
+        shipping_cost,
+        currency,
+        shipping_address,
+        payment_status,
+        order_status,
+        created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, 'PENDING', 'PENDING', NOW())`,
       [
         user_id,
         order_number,
         total_amount,
+        shipping_cost,
         currency,
         shipping_address
       ]
@@ -61,7 +83,10 @@ exports.createOrder = async (req, res) => {
       success: true,
       message: "Order created successfully",
       order_id: result.insertId,
-      order_number: order_number
+      order_number: order_number,
+      total_amount: total_amount,
+      shipping_cost: shipping_cost,
+      currency: currency
     });
 
   } catch (error) {
@@ -75,6 +100,7 @@ exports.createOrder = async (req, res) => {
   }
 };
 
+
 // Get All Orders
 exports.getOrders = async (req, res) => {
   try {
@@ -86,13 +112,15 @@ exports.getOrders = async (req, res) => {
         u.email AS customer_email,
         o.order_number,
         o.total_amount,
+        o.shipping_cost,
         o.currency,
         o.shipping_address,
         o.payment_status,
         o.order_status,
         o.created_at
       FROM orders o
-      INNER JOIN users u ON o.user_id = u.id
+      INNER JOIN users u
+        ON o.user_id = u.id
       ORDER BY o.created_at DESC`
     );
 
@@ -111,6 +139,57 @@ exports.getOrders = async (req, res) => {
     });
   }
 };
+
+
+// Get Order by ID
+exports.getOrderById = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [orders] = await db.query(
+      `SELECT
+        o.id,
+        o.user_id,
+        u.name AS customer_name,
+        u.email AS customer_email,
+        o.order_number,
+        o.total_amount,
+        o.shipping_cost,
+        o.currency,
+        o.shipping_address,
+        o.payment_status,
+        o.order_status,
+        o.created_at
+      FROM orders o
+      INNER JOIN users u
+        ON o.user_id = u.id
+      WHERE o.id = ?`,
+      [id]
+    );
+
+    if (orders.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Order not found"
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: orders[0]
+    });
+
+  } catch (error) {
+    console.error("Get Order By ID Error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch order",
+      error: error.message
+    });
+  }
+};
+
 
 // Update Order Status
 exports.updateOrderStatus = async (req, res) => {
@@ -174,6 +253,7 @@ exports.updateOrderStatus = async (req, res) => {
   }
 };
 
+
 // Update Payment Status
 exports.updatePaymentStatus = async (req, res) => {
   try {
@@ -235,6 +315,7 @@ exports.updatePaymentStatus = async (req, res) => {
   }
 };
 
+
 // Get Orders by User
 exports.getUserOrders = async (req, res) => {
   try {
@@ -246,6 +327,7 @@ exports.getUserOrders = async (req, res) => {
         user_id,
         order_number,
         total_amount,
+        shipping_cost,
         currency,
         shipping_address,
         payment_status,
@@ -272,6 +354,7 @@ exports.getUserOrders = async (req, res) => {
     });
   }
 };
+
 
 // Cancel Order
 exports.cancelOrder = async (req, res) => {
@@ -326,4 +409,3 @@ exports.cancelOrder = async (req, res) => {
     });
   }
 };
-

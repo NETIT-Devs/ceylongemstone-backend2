@@ -1,5 +1,9 @@
 const db = require("../config/db");
 
+// ======================================================
+// SHIPPING METHODS
+// ======================================================
+
 // Create Shipping Method
 const createShippingMethod = async (req, res) => {
   try {
@@ -251,11 +255,390 @@ const deleteShippingMethod = async (req, res) => {
 };
 
 
+// ======================================================
+// SHIPMENT & LOGISTICS TRACKING
+// ======================================================
+
+// Create Shipment
+const createShipment = async (req, res) => {
+  try {
+    const {
+      order_id,
+      shipping_method_id,
+      tracking_number,
+      courier,
+      estimated_delivery
+    } = req.body;
+
+    if (!order_id || !shipping_method_id) {
+      return res.status(400).json({
+        success: false,
+        message: "order_id and shipping_method_id are required"
+      });
+    }
+
+    // Check Order
+    const [orders] = await db.query(
+      "SELECT id FROM orders WHERE id = ?",
+      [order_id]
+    );
+
+    if (orders.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Order not found"
+      });
+    }
+
+    // Check Shipping Method
+    const [shippingMethods] = await db.query(
+      "SELECT id FROM shipping_methods WHERE id = ?",
+      [shipping_method_id]
+    );
+
+    if (shippingMethods.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Shipping method not found"
+      });
+    }
+
+    // Check Existing Shipment
+    const [existingShipment] = await db.query(
+      "SELECT id FROM shipments WHERE order_id = ?",
+      [order_id]
+    );
+
+    if (existingShipment.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: "Shipment already exists for this order"
+      });
+    }
+
+    const [result] = await db.query(
+      `INSERT INTO shipments
+      (
+        order_id,
+        shipping_method_id,
+        tracking_number,
+        courier,
+        status,
+        estimated_delivery
+      )
+      VALUES (?, ?, ?, ?, 'PENDING', ?)`,
+      [
+        order_id,
+        shipping_method_id,
+        tracking_number || null,
+        courier || null,
+        estimated_delivery || null
+      ]
+    );
+
+    res.status(201).json({
+      success: true,
+      message: "Shipment created successfully",
+      shipment_id: result.insertId
+    });
+
+  } catch (error) {
+    console.error("Create Shipment Error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to create shipment",
+      error: error.message
+    });
+  }
+};
+
+
+// Get All Shipments
+const getAllShipments = async (req, res) => {
+  try {
+    const [shipments] = await db.query(
+      `SELECT
+        s.*,
+        o.order_number,
+        sm.country,
+        sm.shipping_method
+      FROM shipments s
+      INNER JOIN orders o
+        ON s.order_id = o.id
+      INNER JOIN shipping_methods sm
+        ON s.shipping_method_id = sm.id
+      ORDER BY s.created_at DESC`
+    );
+
+    res.status(200).json({
+      success: true,
+      count: shipments.length,
+      shipments
+    });
+
+  } catch (error) {
+    console.error("Get All Shipments Error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch shipments",
+      error: error.message
+    });
+  }
+};
+
+
+// Get Shipment by Order ID
+const getShipmentByOrder = async (req, res) => {
+  try {
+    const { order_id } = req.params;
+
+    const [shipments] = await db.query(
+      `SELECT
+        s.*,
+        o.order_number,
+        sm.country,
+        sm.shipping_method,
+        sm.shipping_cost,
+        sm.currency
+      FROM shipments s
+      INNER JOIN orders o
+        ON s.order_id = o.id
+      INNER JOIN shipping_methods sm
+        ON s.shipping_method_id = sm.id
+      WHERE s.order_id = ?`,
+      [order_id]
+    );
+
+    if (shipments.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Shipment not found for this order"
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      shipment: shipments[0]
+    });
+
+  } catch (error) {
+    console.error("Get Shipment Error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch shipment",
+      error: error.message
+    });
+  }
+};
+
+
+// Get Shipment by Tracking Number
+const getShipmentByTrackingNumber = async (req, res) => {
+  try {
+    const { tracking_number } = req.params;
+
+    const [shipments] = await db.query(
+      `SELECT
+        s.*,
+        o.order_number,
+        sm.country,
+        sm.shipping_method,
+        sm.shipping_cost,
+        sm.currency
+      FROM shipments s
+      INNER JOIN orders o
+        ON s.order_id = o.id
+      INNER JOIN shipping_methods sm
+        ON s.shipping_method_id = sm.id
+      WHERE s.tracking_number = ?`,
+      [tracking_number]
+    );
+
+    if (shipments.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Shipment not found"
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      shipment: shipments[0]
+    });
+
+  } catch (error) {
+    console.error("Get Shipment Tracking Error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch shipment tracking information",
+      error: error.message
+    });
+  }
+};
+
+
+// Update Shipment Status
+const updateShipmentStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    const allowedStatuses = [
+      "PENDING",
+      "SHIPPED",
+      "IN_TRANSIT",
+      "OUT_FOR_DELIVERY",
+      "DELIVERED",
+      "CANCELLED"
+    ];
+
+    if (!status || !allowedStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid shipment status"
+      });
+    }
+
+    const [existing] = await db.query(
+      "SELECT id FROM shipments WHERE id = ?",
+      [id]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Shipment not found"
+      });
+    }
+
+    // Update shipped time
+    if (status === "SHIPPED") {
+
+      await db.query(
+        `UPDATE shipments
+         SET
+           status = ?,
+           shipped_at = NOW()
+         WHERE id = ?`,
+        [status, id]
+      );
+
+    // Update delivered time
+    } else if (status === "DELIVERED") {
+
+      await db.query(
+        `UPDATE shipments
+         SET
+           status = ?,
+           delivered_at = NOW()
+         WHERE id = ?`,
+        [status, id]
+      );
+
+    } else {
+
+      await db.query(
+        `UPDATE shipments
+         SET status = ?
+         WHERE id = ?`,
+        [status, id]
+      );
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Shipment status updated successfully"
+    });
+
+  } catch (error) {
+    console.error("Update Shipment Status Error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to update shipment status",
+      error: error.message
+    });
+  }
+};
+
+
+// Update Tracking Information
+const updateTrackingInformation = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const {
+      tracking_number,
+      courier,
+      estimated_delivery
+    } = req.body;
+
+    const [existing] = await db.query(
+      "SELECT id FROM shipments WHERE id = ?",
+      [id]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Shipment not found"
+      });
+    }
+
+    await db.query(
+      `UPDATE shipments
+       SET
+         tracking_number = COALESCE(?, tracking_number),
+         courier = COALESCE(?, courier),
+         estimated_delivery = COALESCE(?, estimated_delivery)
+       WHERE id = ?`,
+      [
+        tracking_number || null,
+        courier || null,
+        estimated_delivery || null,
+        id
+      ]
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Tracking information updated successfully"
+    });
+
+  } catch (error) {
+    console.error("Update Tracking Information Error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to update tracking information",
+      error: error.message
+    });
+  }
+};
+
+
+// ======================================================
+// EXPORTS
+// ======================================================
+
 module.exports = {
+  // Shipping Methods
   createShippingMethod,
   getShippingMethods,
   getActiveShippingMethods,
   getShippingMethodById,
   updateShippingMethod,
-  deleteShippingMethod
+  deleteShippingMethod,
+
+  // Shipment Tracking
+  createShipment,
+  getAllShipments,
+  getShipmentByOrder,
+  getShipmentByTrackingNumber,
+  updateShipmentStatus,
+  updateTrackingInformation
 };

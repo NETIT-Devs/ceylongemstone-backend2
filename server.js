@@ -24,6 +24,7 @@ const blogRoutes = require("./src/routes/blogRoutes");
 const seoRoutes = require("./src/routes/seoRoutes");
 const shippingRoutes = require("./src/routes/shippingRoutes");
 
+
 const app = express();
 app.set('strict routing', false); // Allow optional trailing slashes
 
@@ -31,6 +32,15 @@ app.set('strict routing', false); // Allow optional trailing slashes
 app.use(cors());
 app.use(express.json()); // Frontend එකෙන් එවන JSON data parse කර ගැනීමට
 app.use(express.urlencoded({ extended: true }));
+app.get('/api/health', (req, res) => {
+    res.status(200).json({
+        success: true,
+        message: 'Server is healthy',
+        database: 'Connected'
+    });
+});
+
+
 app.use("/uploads", express.static("uploads")); // Static files for uploaded images
 
 // 3. API Routes Connect කිරීම
@@ -51,6 +61,7 @@ app.use("/api/banners", bannerRoutes);
 app.use("/api/blogs", blogRoutes);
 app.use("/api/seo", seoRoutes);
 app.use("/api/shipping", shippingRoutes);
+
 
 // Test Route (Server එක වැඩදැයි පරීක්ෂා කිරීමට)
 app.get('/', (req, res) => {
