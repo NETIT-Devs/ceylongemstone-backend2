@@ -29,7 +29,17 @@ const app = express();
 app.set('strict routing', false); // Allow optional trailing slashes
 
 // 2. Middlewares (CORS සහ Body Parser)
-app.use(cors());
+app.use(cors({
+  origin: [
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    'http://localhost:3000',
+    'http://localhost:4173'
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json()); // Frontend එකෙන් එවන JSON data parse කර ගැනීමට
 app.use(express.urlencoded({ extended: true }));
 app.get('/api/health', (req, res) => {

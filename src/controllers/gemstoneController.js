@@ -292,3 +292,45 @@ exports.deleteGemstone = async (req, res) => {
     });
   }
 };
+
+// Get Low Stock Gemstones
+exports.getLowStockGemstones = async (req, res) => {
+  try {
+    // Default low stock threshold
+    const threshold = 3;
+
+    const [rows] = await db.query(
+      `SELECT
+        g.id,
+        g.gemstone_id,
+        g.name,
+        g.stock,
+        g.price,
+        g.status,
+        c.name AS category_name
+      FROM gemstones g
+      LEFT JOIN categories c
+        ON g.category_id = c.id
+      WHERE g.stock <= ?
+      ORDER BY g.stock ASC`,
+      [threshold]
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Low stock gemstones fetched successfully",
+      threshold: threshold,
+      count: rows.length,
+      data: rows
+    });
+
+  } catch (error) {
+    console.error("Get Low Stock Gemstones Error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch low stock gemstones",
+      error: error.message
+    });
+  }
+};
