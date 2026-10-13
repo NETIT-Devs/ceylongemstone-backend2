@@ -1,4 +1,5 @@
 const express = require("express");
+const uploadCertificate = require("../middleware/certificateUpload");
 
 const {
     addCertificate,
@@ -11,10 +12,10 @@ const {
 
 const router = express.Router();
 
-router.post("/", addCertificate);
+router.post("/", uploadCertificate, addCertificate);
 router.get("/", getAllCertificates);
 router.get("/:id", getCertificateById);
-router.put("/:id", updateCertificate);
+router.put("/:id", uploadCertificate, updateCertificate);
 router.delete("/:id", deleteCertificate);
 router.get("/verify/:certificate_number", verifyCertificate);
 

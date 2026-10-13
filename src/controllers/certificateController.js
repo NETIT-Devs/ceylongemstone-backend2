@@ -27,7 +27,7 @@ const addCertificate = async (req, res) => {
                 gemstone_id,
                 certificate_number,
                 laboratory,
-                certificate_url,
+                req.file ? `/uploads/certificates/${req.file.filename}` : certificate_url || null,
                 verification_status,
                 issue_date
             ]
@@ -130,9 +130,9 @@ const updateCertificate = async (req, res) => {
             [
                 certificate_number,
                 laboratory,
-                certificate_url,
-                verification_status,
-                issue_date,
+                req.file ? `/uploads/certificates/${req.file.filename}` : certificate_url || null,
+                verification_status || "pending",
+                issue_date || null,
                 id
             ]
         );
