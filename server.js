@@ -1,11 +1,16 @@
-// 1. Environment variables load කිරීම (db.js also loads .env - handled there)
+// ==========================================
+// CEYLON ROYAL GEMSTONES - BACKEND SERVER
+// ==========================================
+
+// Import required core modules and third-party libraries
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
 
-// Config Import කිරීම
+// Import database configuration instance
 const db = require('./src/config/db');
 
-// Routes Imports කිරීම
+// Import all API route modules
 const authRoutes = require('./src/routes/authRoutes');
 const gemstoneRoutes = require('./src/routes/gemstoneRoutes');
 const categoryRoutes = require('./src/routes/categoryRoutes');
@@ -24,24 +29,28 @@ const blogRoutes = require("./src/routes/blogRoutes");
 const seoRoutes = require("./src/routes/seoRoutes");
 const shippingRoutes = require("./src/routes/shippingRoutes");
 
-
+// Initialize Express application
 const app = express();
-app.set('strict routing', false); // Allow optional trailing slashes
+app.set('strict routing', false); // Allow optional trailing slashes in route URLs
 
-// 2. Middlewares (CORS සහ Body Parser)
+// Configure CORS middleware to permit frontend origins and credentials
 app.use(cors({
-  origin: [
-    'http://localhost:5173',
-    'http://127.0.0.1:5173',
-    'http://localhost:3000',
-    'http://localhost:4173'
-  ],
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+    origin: [
+        'http://localhost:5173',
+        'http://127.0.0.1:5173',
+        'http://localhost:3000',
+        'http://localhost:4173'
+    ],
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
 }));
-app.use(express.json()); // Frontend එකෙන් එවන JSON data parse කර ගැනීමට
+
+// Parse incoming JSON and URL-encoded payloads from the client
+app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Health check endpoint to verify server and database status
 app.get('/api/health', (req, res) => {
     res.status(200).json({
         success: true,
@@ -50,35 +59,34 @@ app.get('/api/health', (req, res) => {
     });
 });
 
+// Serve static files from the uploads directory
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
-app.use("/uploads", express.static("uploads")); // Static files for uploaded images
+// Mount API route handlers to their respective base paths
+app.use('/api/auth', authRoutes);                   // Authentication routes
+app.use('/api/categories', categoryRoutes);         // Category management routes
+app.use('/api/gemstones', gemstoneRoutes);          // Gemstone inventory routes
+app.use('/api/certificates', certificateRoutes);    // Certificate verification routes
+app.use('/api/gemstone-images', gemstoneImageRoutes); // Multi-angle image routes
+app.use('/api/wishlist', wishlistRoutes);           // User wishlist routes
+app.use('/api/cart', cartRoutes);                   // Shopping cart routes
+app.use("/api/enquiries", enquiryRoutes);           // Customer enquiry routes
+app.use("/api/reviews", reviewRoutes);              // Product review routes
+app.use("/api/orders", orderRoutes);                // Order management routes
+app.use("/api/order-items", orderItemRoutes);       // Order items routes
+app.use("/api/checkout", checkoutRoutes);           // Checkout & payment routes
+app.use("/api/currency", currencyRoutes);           // Currency conversion routes
+app.use("/api/banners", bannerRoutes);              // Promotional banners routes
+app.use("/api/blogs", blogRoutes);                  // Blog posts routes
+app.use("/api/seo", seoRoutes);                     // SEO metadata routes
+app.use("/api/shipping", shippingRoutes);           // Shipping methods routes
 
-// 3. API Routes Connect කිරීම
-app.use('/api/auth', authRoutes);             // e.g. POST /api/auth/login, POST /api/auth/register
-app.use('/api/categories', categoryRoutes);   // e.g. GET/POST /api/categories
-app.use('/api/gemstones', gemstoneRoutes);    // e.g. GET/POST /api/gemstones
-app.use('/api/certificates', certificateRoutes); // e.g. GET/POST /api/certificates
-app.use('/api/gemstone-images', gemstoneImageRoutes); // e.g. POST /api/gemstone-images/upload
-app.use('/api/wishlist', wishlistRoutes); // e.g. POST /api/wishlist
-app.use('/api/cart', cartRoutes); // e.g. POST /api/cart
-app.use("/api/enquiries", enquiryRoutes);
-app.use("/api/reviews", reviewRoutes); // e.g. POST /api/reviews
-app.use("/api/orders", orderRoutes);
-app.use("/api/order-items", orderItemRoutes);
-app.use("/api/checkout", checkoutRoutes);
-app.use("/api/currency", currencyRoutes);
-app.use("/api/banners", bannerRoutes);
-app.use("/api/blogs", blogRoutes);
-app.use("/api/seo", seoRoutes);
-app.use("/api/shipping", shippingRoutes);
-
-
-// Test Route (Server එක වැඩදැයි පරීක්ෂා කිරීමට)
+// Root test route to verify API availability
 app.get('/', (req, res) => {
     res.send('API is running successfully!');
 });
 
-// 4. Global Error Handling Middleware (ඕනෑම unhandled error එකක් ආවොත් සර්වර් එක crash නොවී ලස්සනට response එකක් යැවීමට)
+// Global Error Handling Middleware to catch unhandled errors gracefully
 app.use((err, req, res, next) => {
     console.error('Unhandled Error:', err.stack);
     res.status(500).json({
@@ -88,7 +96,7 @@ app.use((err, req, res, next) => {
     });
 });
 
-// 5. 404 Handler - Unknown route
+// 404 Handler for unmatched routes
 app.use((req, res) => {
     console.warn(`[404] Unmatched route: ${req.method} ${req.originalUrl}`);
     res.status(404).json({
@@ -97,16 +105,20 @@ app.use((req, res) => {
     });
 });
 
-// 6. Port එක set කර සර්වර් එක start කිරීම
+// Set server port and start listening
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, async () => {
-    console.log(`Server is running on port ${PORT}`);
-    // Verify DB connection on startup
+    console.log(`\n==================================================`);
+    console.log(`🚀 Server is running successfully on port: ${PORT}`);
+
+    // Verify database connection on startup with clean checkmark logs
     try {
         await db.query('SELECT 1');
-        console.log(`Database connected successfully (${process.env.DB_NAME || 'srilankan_gemstone'})`);
+        console.log(`✅ Database connected successfully (${process.env.DB_NAME || 'srilankan_gemstone'})`);
+        console.log(`==================================================\n`);
     } catch (err) {
-        console.error('Database connection FAILED:', err.message);
+        console.error(`❌ Database connection FAILED: ${err.message}`);
+        console.log(`==================================================\n`);
     }
 });

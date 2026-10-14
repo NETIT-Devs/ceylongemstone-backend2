@@ -6,30 +6,42 @@ async function seedDatabase() {
   console.log("--- Starting Database Seeder ---");
 
   try {
-    // 1. Seed Categories
+    // 1. Ensure base and shop-specific categories exist without changing existing IDs.
     console.log("Checking categories...");
-    const [existingCategories] = await db.query("SELECT COUNT(*) AS count FROM categories");
-    
-    if (existingCategories[0].count === 0) {
-      console.log("Seeding categories...");
-      const categories = [
-        { name: "Sapphire", description: "Natural Ceylon Sapphires including Blue, Yellow, and Padparadscha" },
-        { name: "Ruby", description: "Natural Sri Lankan Rubies and Star Rubies" },
-        { name: "Emerald", description: "Premium grade natural Emeralds" },
-        { name: "Alexandrite", description: "Rare color-changing Chrysoberyl Alexandrite" },
-        { name: "Spinel", description: "Natural untreated Ceylon Spinels" }
-      ];
+    const categories = [
+      { name: "Sapphire", description: "Natural Ceylon Sapphires including Blue, Yellow, and Padparadscha" },
+      { name: "Ruby", description: "Natural Sri Lankan Rubies and Star Rubies" },
+      { name: "Emerald", description: "Premium grade natural Emeralds" },
+      { name: "Alexandrite", description: "Rare color-changing Chrysoberyl Alexandrite" },
+      { name: "Spinel", description: "Natural untreated Ceylon Spinels" },
+      { name: "Blue Sapphire", description: "Natural Ceylon blue sapphires" },
+      { name: "Yellow Sapphire", description: "Natural Ceylon yellow sapphires" },
+      { name: "Green Gemstone", description: "Natural green gemstones including emeralds" },
+      { name: "Padparadscha Sapphire", description: "Rare natural Ceylon Padparadscha sapphires" },
+      { name: "Star Sapphire", description: "Natural star sapphires displaying asterism" },
+      { name: "Cat's Eye", description: "Natural Ceylon cat's eye gemstones displaying chatoyancy" }
+    ];
+    const [existingCategories] = await db.query("SELECT name FROM categories");
+    const existingCategoryNames = new Set(
+      existingCategories.map((category) => category.name.trim().toLowerCase())
+    );
+    let addedCategories = 0;
 
-      for (const cat of categories) {
+    for (const cat of categories) {
+      if (!existingCategoryNames.has(cat.name.toLowerCase())) {
         await db.query(
           "INSERT INTO categories (name, description, status) VALUES (?, ?, 1)",
           [cat.name, cat.description]
         );
+        existingCategoryNames.add(cat.name.toLowerCase());
+        addedCategories += 1;
       }
-      console.log(`Successfully seeded ${categories.length} categories.`);
-    } else {
-      console.log(`Categories already exist (${existingCategories[0].count} found).`);
     }
+    console.log(
+      addedCategories
+        ? `Added ${addedCategories} missing gemstone categories.`
+        : "All base and shop-specific categories already exist."
+    );
 
     // 2. Seed Test / Admin User
     console.log("Checking users...");
