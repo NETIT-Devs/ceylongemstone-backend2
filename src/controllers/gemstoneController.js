@@ -16,13 +16,55 @@ const treatmentAliases = {
 const normalizeTreatment = (value) =>
   String(value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 
+const formatDatabaseDate = (value) => {
+  if (value instanceof Date) {
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, "0");
+    const day = String(value.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+  return typeof value === "string" ? value.slice(0, 10) : value ?? null;
+};
+
 const mediaFields = [
   { field: "mainImage", type: "front", primary: true },
   { field: "backViewImage", type: "back" },
   { field: "rightViewImage", type: "right" },
   { field: "leftViewImage", type: "left" },
+  { field: "additional_view_1", type: "additional_view_1" },
+  { field: "additional_view_2", type: "additional_view_2" },
   { field: "videoClip", type: "video" },
 ];
+
+const isValidSqlDate = (value) => {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+};
+
+const validateOfferFields = (rate, startDate, endDate) => {
+  const parsedRate = rate === undefined || rate === null || rate === "" ? null : Number(rate);
+  const normalizedStart = startDate || null;
+  const normalizedEnd = endDate || null;
+
+  if (parsedRate !== null && (!Number.isFinite(parsedRate) || parsedRate < 1 || parsedRate > 100)) {
+    return "Offer rate must be between 1 and 100.";
+  }
+  if (parsedRate !== null && (!normalizedStart || !normalizedEnd)) {
+    return "Both offer start and end dates are required when an offer rate is set.";
+  }
+  if (
+    (normalizedStart && !isValidSqlDate(normalizedStart)) ||
+    (normalizedEnd && !isValidSqlDate(normalizedEnd))
+  ) {
+    return "Offer dates must be valid calendar dates in YYYY-MM-DD format.";
+  }
+  if (normalizedStart && normalizedEnd && normalizedStart > normalizedEnd) {
+    return "Offer end date must be on or after the start date.";
+  }
+
+  return null;
+};
 
 const removeUploadedFiles = async (req) => {
   const files = Object.values(req.files || {}).flat();
@@ -69,6 +111,8 @@ const attachGemstoneMedia = async (gemstones) => {
       ["Back", imageFor("back")],
       ["Right", imageFor("right")],
       ["Left", imageFor("left")],
+      ["Additional View 1", imageFor("additional_view_1")],
+      ["Additional View 2", imageFor("additional_view_2")],
     ]
       .filter(([, url]) => url)
       .map(([label, url]) => ({ label, url }));
@@ -77,7 +121,16 @@ const attachGemstoneMedia = async (gemstones) => {
         (item) =>
           item.image_url &&
           item !== frontMedia &&
-          !["front", "main", "back", "right", "left", "video"].includes(item.image_type)
+          ![
+            "front",
+            "main",
+            "back",
+            "right",
+            "left",
+            "additional_view_1",
+            "additional_view_2",
+            "video",
+          ].includes(item.image_type)
       )
       .map((item, index) => ({
         label: `View ${index + 1}`,
@@ -92,6 +145,8 @@ const attachGemstoneMedia = async (gemstones) => {
       back_view_image: imageFor("back"),
       right_view_image: imageFor("right"),
       left_view_image: imageFor("left"),
+      additional_view_1: imageFor("additional_view_1"),
+      additional_view_2: imageFor("additional_view_2"),
       video_url: videoUrl,
       image: front || allGalleryViews[0]?.url || null,
       images: allGalleryViews.map((view) => view.url),
@@ -100,6 +155,9 @@ const attachGemstoneMedia = async (gemstones) => {
         .map((label) => galleryViews.find((view) => view.label === label)?.url)
         .filter(Boolean),
       videoUrl,
+      discountRate: gemstone.offer_rate,
+      offerStartDate: formatDatabaseDate(gemstone.offer_start_date),
+      offerEndDate: formatDatabaseDate(gemstone.offer_end_date),
     };
   });
 };
@@ -125,6 +183,9 @@ exports.createGemstone = async (req, res) => {
       stock,
       description,
       status,
+      offer_rate,
+      offer_start_date,
+      offer_end_date,
     } = req.body;
 
     if (!name || !category_id) {
@@ -133,6 +194,15 @@ exports.createGemstone = async (req, res) => {
         success: false,
         message: "Gemstone name and category_id are required",
       });
+    }
+    const offerValidationError = validateOfferFields(
+      offer_rate,
+      offer_start_date,
+      offer_end_date
+    );
+    if (offerValidationError) {
+      await removeUploadedFiles(req);
+      return res.status(400).json({ success: false, message: offerValidationError });
     }
 
     // Verify category exists
@@ -160,8 +230,8 @@ exports.createGemstone = async (req, res) => {
 
     const query = `
       INSERT INTO gemstones 
-      (gemstone_id, category_id, name, color, carat, length, width, height, clarity, cut, shape, origin, treatment_status, price, stock, description, status) 
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (gemstone_id, category_id, name, color, carat, length, width, height, clarity, cut, shape, origin, treatment_status, price, stock, description, status, offer_rate, offer_start_date, offer_end_date)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
     const values = [
@@ -182,6 +252,9 @@ exports.createGemstone = async (req, res) => {
       stock !== undefined ? parseInt(stock, 10) : 1,
       description || null,
       statusVal,
+      offer_rate === undefined || offer_rate === "" ? null : Number(offer_rate),
+      offer_start_date || null,
+      offer_end_date || null,
     ];
 
     const connection = await db.getConnection();
@@ -369,6 +442,9 @@ exports.updateGemstone = async (req, res) => {
       stock,
       description,
       status,
+      offer_rate,
+      offer_start_date,
+      offer_end_date,
     } = req.body;
 
     const [existing] = await db.query("SELECT * FROM gemstones WHERE id = ?", [id]);
@@ -380,6 +456,24 @@ exports.updateGemstone = async (req, res) => {
     }
 
     const current = existing[0];
+    const updatedOfferRate = offer_rate !== undefined
+      ? (offer_rate === "" || offer_rate === null ? null : offer_rate)
+      : current.offer_rate;
+    const updatedOfferStartDate = offer_start_date !== undefined
+      ? (offer_start_date || null)
+      : current.offer_start_date;
+    const updatedOfferEndDate = offer_end_date !== undefined
+      ? (offer_end_date || null)
+      : current.offer_end_date;
+    const offerValidationError = validateOfferFields(
+      updatedOfferRate,
+      updatedOfferStartDate,
+      updatedOfferEndDate
+    );
+    if (offerValidationError) {
+      return res.status(400).json({ success: false, message: offerValidationError });
+    }
+
     const statusVal = status !== undefined
       ? (status === 1 || status === true || status === "available" || status === "active" ? 1 : 0)
       : current.status;
@@ -401,7 +495,10 @@ exports.updateGemstone = async (req, res) => {
         price = ?,
         stock = ?,
         description = ?,
-        status = ?
+        status = ?,
+        offer_rate = ?,
+        offer_start_date = ?,
+        offer_end_date = ?
       WHERE id = ?
     `;
 
@@ -422,6 +519,9 @@ exports.updateGemstone = async (req, res) => {
       stock !== undefined ? stock : current.stock,
       description !== undefined ? description : current.description,
       statusVal,
+      updatedOfferRate,
+      updatedOfferStartDate,
+      updatedOfferEndDate,
       id,
     ];
 

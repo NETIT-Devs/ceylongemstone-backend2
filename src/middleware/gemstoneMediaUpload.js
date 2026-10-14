@@ -23,7 +23,7 @@ const upload = multer({
   storage,
   limits: {
     fileSize: 25 * 1024 * 1024,
-    files: 5,
+    files: 7,
   },
   fileFilter: (_req, file, callback) => {
     const extension = path.extname(file.originalname).toLowerCase();
@@ -54,6 +54,8 @@ const upload = multer({
   { name: "backViewImage", maxCount: 1 },
   { name: "rightViewImage", maxCount: 1 },
   { name: "leftViewImage", maxCount: 1 },
+  { name: "additional_view_1", maxCount: 1 },
+  { name: "additional_view_2", maxCount: 1 },
   { name: "videoClip", maxCount: 1 },
 ]);
 
