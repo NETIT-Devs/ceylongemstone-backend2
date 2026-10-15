@@ -28,19 +28,34 @@ const bannerRoutes = require("./src/routes/bannerRoutes");
 const blogRoutes = require("./src/routes/blogRoutes");
 const seoRoutes = require("./src/routes/seoRoutes");
 const shippingRoutes = require("./src/routes/shippingRoutes");
+const jewelleryRoutes = require("./src/routes/jewelleryRoutes");
+
+
+
 
 // Initialize Express application
 const app = express();
 app.set('strict routing', false); // Allow optional trailing slashes in route URLs
 
-// Configure CORS middleware to permit frontend origins and credentials
+// Configure CORS middleware to permit frontend origins and credentials.
+// Vite chooses a free local port when the default port is occupied, so we allow
+// any localhost/127.0.0.1 origin during local development while keeping the
+// API strict on non-local origins.
 app.use(cors({
-    origin: [
-        'http://localhost:5173',
-        'http://127.0.0.1:5173',
-        'http://localhost:3000',
-        'http://localhost:4173'
-    ],
+    origin: (origin, callback) => {
+        if (!origin) {
+            callback(null, true);
+            return;
+        }
+
+        const matchesLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+):\d+$/.test(origin);
+        if (matchesLocalhost) {
+            callback(null, true);
+            return;
+        }
+
+        callback(new Error('Not allowed by CORS'));
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization']
@@ -80,6 +95,8 @@ app.use("/api/banners", bannerRoutes);              // Promotional banners route
 app.use("/api/blogs", blogRoutes);                  // Blog posts routes
 app.use("/api/seo", seoRoutes);                     // SEO metadata routes
 app.use("/api/shipping", shippingRoutes);           // Shipping methods routes
+app.use("/api/jewellery", jewelleryRoutes);         // Jewellery product management routes
+
 
 // Root test route to verify API availability
 app.get('/', (req, res) => {

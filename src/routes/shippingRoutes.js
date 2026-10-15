@@ -23,29 +23,6 @@ const router = express.Router();
 
 
 // ======================================================
-// SHIPPING METHODS
-// ======================================================
-
-// Create Shipping Method
-router.post("/", createShippingMethod);
-
-// Get All Shipping Methods
-router.get("/", getShippingMethods);
-
-// Get Active Shipping Methods
-router.get("/active", getActiveShippingMethods);
-
-// Get Shipping Method by ID
-router.get("/:id", getShippingMethodById);
-
-// Update Shipping Method
-router.put("/:id", updateShippingMethod);
-
-// Delete Shipping Method
-router.delete("/:id", deleteShippingMethod);
-
-
-// ======================================================
 // SHIPMENT & LOGISTICS TRACKING
 // ======================================================
 
@@ -75,6 +52,29 @@ router.put(
   "/shipments/:id/tracking",
   updateTrackingInformation
 );
+
+
+// ======================================================
+// SHIPPING METHODS
+// ======================================================
+
+// Create Shipping Method
+router.post("/", createShippingMethod);
+
+// Get All Shipping Methods
+router.get("/", getShippingMethods);
+
+// Get Active Shipping Methods
+router.get("/active", getActiveShippingMethods);
+
+// Get Shipping Method by ID
+router.get("/:id", getShippingMethodById);
+
+// Update Shipping Method
+router.put("/:id", updateShippingMethod);
+
+// Delete Shipping Method
+router.delete("/:id", deleteShippingMethod);
 
 
 module.exports = router;
