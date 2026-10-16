@@ -1,9 +1,13 @@
 const multer = require("multer");
 const path = require("path");
+const fs = require("fs");
+
+const uploadDirectory = path.resolve(__dirname, "../../uploads/gemstones");
+fs.mkdirSync(uploadDirectory, { recursive: true });
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
-        cb(null, "uploads/gemstones/");
+        cb(null, uploadDirectory);
     },
 
     filename: (req, file, cb) => {

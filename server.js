@@ -28,6 +28,8 @@ const bannerRoutes = require("./src/routes/bannerRoutes");
 const blogRoutes = require("./src/routes/blogRoutes");
 const seoRoutes = require("./src/routes/seoRoutes");
 const shippingRoutes = require("./src/routes/shippingRoutes");
+const { getActiveShippingMethods } = require("./src/controllers/shippingController");
+const dashboardRoutes = require("./src/routes/dashboardRoutes");
 const jewelleryRoutes = require("./src/routes/jewelleryRoutes");
 
 
@@ -75,7 +77,8 @@ app.get('/api/health', (req, res) => {
 });
 
 // Serve static files from the uploads directory
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+const uploadsDirectory = path.resolve(__dirname, "uploads");
+app.use("/uploads", express.static(uploadsDirectory));
 
 // Mount API route handlers to their respective base paths
 app.use('/api/auth', authRoutes);                   // Authentication routes
@@ -95,6 +98,8 @@ app.use("/api/banners", bannerRoutes);              // Promotional banners route
 app.use("/api/blogs", blogRoutes);                  // Blog posts routes
 app.use("/api/seo", seoRoutes);                     // SEO metadata routes
 app.use("/api/shipping", shippingRoutes);           // Shipping methods routes
+app.get("/api/shipping-methods", getActiveShippingMethods);
+app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/jewellery", jewelleryRoutes);         // Jewellery product management routes
 
 

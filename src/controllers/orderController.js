@@ -113,6 +113,7 @@ exports.getOrders = async (req, res) => {
         o.order_number,
         o.total_amount,
         o.shipping_cost,
+        COALESCE(o.total_amount, 0) + COALESCE(o.shipping_cost, 0) AS final_total,
         o.currency,
         o.shipping_address,
         o.payment_status,
@@ -124,9 +125,40 @@ exports.getOrders = async (req, res) => {
       ORDER BY o.created_at DESC`
     );
 
+    const itemsByOrderId = new Map();
+    if (orders.length > 0) {
+      const placeholders = orders.map(() => "?").join(", ");
+      const [items] = await db.query(
+        `SELECT
+          oi.id,
+          oi.order_id,
+          oi.gemstone_id,
+          g.gemstone_id AS gemstone_code,
+          g.name AS gemstone_name,
+          oi.quantity,
+          oi.price,
+          oi.currency
+        FROM order_items oi
+        INNER JOIN gemstones g
+          ON oi.gemstone_id = g.id
+        WHERE oi.order_id IN (${placeholders})
+        ORDER BY oi.id`,
+        orders.map((order) => order.id)
+      );
+
+      for (const item of items) {
+        const orderItems = itemsByOrderId.get(item.order_id) || [];
+        orderItems.push(item);
+        itemsByOrderId.set(item.order_id, orderItems);
+      }
+    }
+
     return res.status(200).json({
       success: true,
-      data: orders
+      data: orders.map((order) => ({
+        ...order,
+        items: itemsByOrderId.get(order.id) || []
+      }))
     });
 
   } catch (error) {
@@ -155,6 +187,7 @@ exports.getOrderById = async (req, res) => {
         o.order_number,
         o.total_amount,
         o.shipping_cost,
+        COALESCE(o.total_amount, 0) + COALESCE(o.shipping_cost, 0) AS final_total,
         o.currency,
         o.shipping_address,
         o.payment_status,
@@ -323,25 +356,74 @@ exports.getUserOrders = async (req, res) => {
 
     const [orders] = await db.query(
       `SELECT
-        id,
-        user_id,
-        order_number,
-        total_amount,
-        shipping_cost,
-        currency,
-        shipping_address,
-        payment_status,
-        order_status,
-        created_at
-      FROM orders
-      WHERE user_id = ?
-      ORDER BY created_at DESC`,
+        o.id,
+        o.user_id,
+        o.order_number,
+        o.total_amount,
+        o.shipping_cost,
+        COALESCE(o.total_amount, 0) + COALESCE(o.shipping_cost, 0) AS final_total,
+        o.currency,
+        o.shipping_address,
+        s.tracking_number,
+        s.courier,
+        s.estimated_delivery,
+        s.status AS shipment_status,
+        o.payment_status,
+        o.order_status,
+        o.created_at
+      FROM orders o
+      LEFT JOIN shipments s
+        ON s.order_id = o.id
+      WHERE o.user_id = ?
+      ORDER BY o.created_at DESC`,
       [user_id]
     );
 
+    const itemsByOrderId = new Map();
+    if (orders.length > 0) {
+      const placeholders = orders.map(() => "?").join(", ");
+      const [items] = await db.query(
+        `SELECT
+          oi.id,
+          oi.order_id,
+          oi.gemstone_id,
+          g.gemstone_id AS gemstone_code,
+          g.name AS gemstone_name,
+          g.carat,
+          g.cut,
+          g.shape,
+          g.origin,
+          (
+            SELECT c.certificate_number
+            FROM certificates c
+            WHERE c.gemstone_id = g.id
+            ORDER BY c.created_at DESC, c.id DESC
+            LIMIT 1
+          ) AS certificate_number,
+          oi.quantity,
+          oi.price,
+          oi.currency
+        FROM order_items oi
+        INNER JOIN gemstones g
+          ON oi.gemstone_id = g.id
+        WHERE oi.order_id IN (${placeholders})
+        ORDER BY oi.id`,
+        orders.map((order) => order.id)
+      );
+
+      for (const item of items) {
+        const orderItems = itemsByOrderId.get(item.order_id) || [];
+        orderItems.push(item);
+        itemsByOrderId.set(item.order_id, orderItems);
+      }
+    }
+
     return res.status(200).json({
       success: true,
-      data: orders
+      data: orders.map((order) => ({
+        ...order,
+        items: itemsByOrderId.get(order.id) || []
+      }))
     });
 
   } catch (error) {

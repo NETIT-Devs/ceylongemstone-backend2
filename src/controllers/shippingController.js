@@ -96,7 +96,15 @@ const getShippingMethods = async (req, res) => {
 const getActiveShippingMethods = async (req, res) => {
   try {
     const [methods] = await db.query(
-      `SELECT *
+      `SELECT
+         id,
+         country,
+         shipping_method,
+         estimated_days,
+         shipping_cost,
+         currency,
+         free_shipping,
+         status
        FROM shipping_methods
        WHERE status = 1
        ORDER BY country ASC`
@@ -287,19 +295,6 @@ const createShipment = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: "Order not found"
-      });
-    }
-
-    // Check Shipping Method
-    const [shippingMethods] = await db.query(
-      "SELECT id FROM shipping_methods WHERE id = ?",
-      [shipping_method_id]
-    );
-
-    if (shippingMethods.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Shipping method not found"
       });
     }
 

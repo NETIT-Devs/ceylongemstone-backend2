@@ -18,6 +18,70 @@ const getManagedCertificatePath = (certificateUrl) => {
     return path.dirname(filePath) === certificateUploadDirectory ? filePath : null;
 };
 
+const getUploadedCertificate = (req) =>
+    req.file || req.files?.certificate?.[0] || req.files?.certificate_url?.[0] || null;
+
+const removeUploadedCertificate = async (req) => {
+    const files = req.file
+        ? [req.file]
+        : Object.values(req.files || {}).flat();
+    const results = await Promise.allSettled(files.map((file) => fs.unlink(file.path)));
+    results
+        .filter((result) => result.status === "rejected" && result.reason.code !== "ENOENT")
+        .forEach((result) => console.error("Certificate upload cleanup failed:", result.reason));
+};
+
+const removeReplacedCertificate = async (certificateUrl) => {
+    const filePath = getManagedCertificatePath(certificateUrl);
+    if (!filePath) return;
+
+    try {
+        const [references] = await db.query(
+            "SELECT id FROM certificates WHERE certificate_url = ? LIMIT 1",
+            [certificateUrl]
+        );
+        if (references.length === 0) {
+            await fs.unlink(filePath);
+        }
+    } catch (error) {
+        if (error.code !== "ENOENT") {
+            console.error("Replaced certificate file cleanup failed:", error);
+        }
+    }
+};
+
+const validateCertificateFields = async ({ gemstoneId, certificateNumber, laboratory, status, issueDate }) => {
+    if (!Number.isSafeInteger(Number(gemstoneId)) || Number(gemstoneId) < 1) {
+        return "A valid gemstone ID is required.";
+    }
+    if (!String(certificateNumber || "").trim() || !String(laboratory || "").trim()) {
+        return "Certificate number and laboratory are required.";
+    }
+    if (!["VERIFIED", "PENDING", "REJECTED"].includes(String(status || "").toUpperCase())) {
+        return "Verification status must be VERIFIED, PENDING, or REJECTED.";
+    }
+    if (issueDate) {
+        const normalizedDate = issueDate instanceof Date
+            ? issueDate.toISOString().slice(0, 10)
+            : String(issueDate).slice(0, 10);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(normalizedDate)) {
+            return "Issue date must be in YYYY-MM-DD format.";
+        }
+        const parsedDate = new Date(`${normalizedDate}T00:00:00.000Z`);
+        if (Number.isNaN(parsedDate.getTime()) || parsedDate.toISOString().slice(0, 10) !== normalizedDate) {
+            return "Issue date must be a valid calendar date.";
+        }
+    }
+
+    const [gemstones] = await db.query("SELECT id FROM gemstones WHERE id = ?", [Number(gemstoneId)]);
+    return gemstones.length ? null : "The linked gemstone does not exist.";
+};
+
+const getUploadedCertificateUrl = (req, fallbackUrl = null) => {
+    const file = getUploadedCertificate(req);
+    return file ? `/uploads/certificates/${file.filename}` : fallbackUrl;
+};
+
 // Add certificate
 const addCertificate = async (req, res) => {
     try {
@@ -30,10 +94,19 @@ const addCertificate = async (req, res) => {
             issue_date
         } = req.body;
 
-        if (!gemstone_id || !certificate_number || !laboratory) {
+        const normalizedStatus = String(verification_status || "PENDING").toUpperCase();
+        const validationError = await validateCertificateFields({
+            gemstoneId: gemstone_id,
+            certificateNumber: certificate_number,
+            laboratory,
+            status: normalizedStatus,
+            issueDate: issue_date
+        });
+        if (validationError) {
+            await removeUploadedCertificate(req);
             return res.status(400).json({
                 success: false,
-                message: "Gemstone ID, certificate number and laboratory are required"
+                message: validationError
             });
         }
 
@@ -43,10 +116,10 @@ const addCertificate = async (req, res) => {
             VALUES (?, ?, ?, ?, ?, ?)`,
             [
                 gemstone_id,
-                certificate_number,
-                laboratory,
-                req.file ? `/uploads/certificates/${req.file.filename}` : certificate_url || null,
-                verification_status || "PENDING",
+                String(certificate_number).trim(),
+                laboratory.trim(),
+                getUploadedCertificateUrl(req, certificate_url || null),
+                normalizedStatus,
                 issue_date || null
             ]
         );
@@ -58,11 +131,14 @@ const addCertificate = async (req, res) => {
         });
 
     } catch (error) {
+        await removeUploadedCertificate(req);
         console.error("Add Certificate Error:", error);
 
-        res.status(500).json({
+        res.status(error.code === "ER_DUP_ENTRY" ? 409 : 500).json({
             success: false,
-            message: "Error adding certificate",
+            message: error.code === "ER_DUP_ENTRY"
+                ? "A certificate with this certificate number already exists."
+                : "Error adding certificate",
             error: error.message
         });
     }
@@ -130,6 +206,7 @@ const updateCertificate = async (req, res) => {
         const { id } = req.params;
 
         const {
+            gemstone_id,
             certificate_number,
             laboratory,
             certificate_url,
@@ -137,29 +214,69 @@ const updateCertificate = async (req, res) => {
             issue_date
         } = req.body;
 
-        const [result] = await db.query(
+        const [existingRows] = await db.query(
+            "SELECT * FROM certificates WHERE id = ?",
+            [id]
+        );
+        if (!existingRows.length) {
+            await removeUploadedCertificate(req);
+            return res.status(404).json({
+                success: false,
+                message: "Certificate not found"
+            });
+        }
+        const current = existingRows[0];
+        const gemstoneId = gemstone_id === undefined ? current.gemstone_id : gemstone_id;
+        const certificateNumber = certificate_number === undefined
+            ? current.certificate_number
+            : String(certificate_number).trim();
+        const certificateLaboratory = laboratory === undefined
+            ? current.laboratory
+            : String(laboratory).trim();
+        const normalizedStatus = String(
+            verification_status === undefined ? current.verification_status : verification_status
+        ).toUpperCase();
+        const issueDate = issue_date === undefined ? current.issue_date : issue_date;
+        const validationError = await validateCertificateFields({
+            gemstoneId,
+            certificateNumber,
+            laboratory: certificateLaboratory,
+            status: normalizedStatus,
+            issueDate
+        });
+        if (validationError) {
+            await removeUploadedCertificate(req);
+            return res.status(400).json({ success: false, message: validationError });
+        }
+
+        const updatedCertificateUrl = getUploadedCertificateUrl(
+            req,
+            certificate_url === undefined || certificate_url === ""
+                ? current.certificate_url
+                : certificate_url
+        );
+        await db.query(
             `UPDATE certificates
-             SET certificate_number = ?,
+             SET gemstone_id = ?,
+                 certificate_number = ?,
                  laboratory = ?,
                  certificate_url = ?,
                  verification_status = ?,
                  issue_date = ?
              WHERE id = ?`,
-            [
-                certificate_number,
-                laboratory,
-                req.file ? `/uploads/certificates/${req.file.filename}` : certificate_url || null,
-                verification_status || "pending",
-                issue_date || null,
-                id
-            ]
+             [
+                 gemstoneId,
+                 certificateNumber,
+                 certificateLaboratory,
+                 updatedCertificateUrl,
+                 normalizedStatus,
+                 issueDate || null,
+                 id
+             ]
         );
 
-        if (result.affectedRows === 0) {
-            return res.status(404).json({
-                success: false,
-                message: "Certificate not found"
-            });
+        if (updatedCertificateUrl !== current.certificate_url) {
+             await removeReplacedCertificate(current.certificate_url);
         }
 
         res.status(200).json({
@@ -168,11 +285,14 @@ const updateCertificate = async (req, res) => {
         });
 
     } catch (error) {
+        await removeUploadedCertificate(req);
         console.error("Update Certificate Error:", error);
 
-        res.status(500).json({
+        res.status(error.code === "ER_DUP_ENTRY" ? 409 : 500).json({
             success: false,
-            message: "Error updating certificate",
+            message: error.code === "ER_DUP_ENTRY"
+                ? "A certificate with this certificate number already exists."
+                : "Error updating certificate",
             error: error.message
         });
     }

@@ -24,7 +24,8 @@ const verifyToken = (req, res, next) => {
 };
 
 const requireAdmin = (req, res, next) => {
-  if (!req.user || (req.user.role !== "ADMIN" && req.user.role !== "SUPER_ADMIN")) {
+  const role = String(req.user?.role || "").toUpperCase();
+  if (role !== "ADMIN" && role !== "SUPER_ADMIN") {
     return res.status(403).json({
       success: false,
       message: "Access forbidden: Admin privileges required"
@@ -33,7 +34,18 @@ const requireAdmin = (req, res, next) => {
   next();
 };
 
+const requireSuperAdmin = (req, res, next) => {
+  if (String(req.user?.role || "").toUpperCase() !== "SUPER_ADMIN") {
+    return res.status(403).json({
+      success: false,
+      message: "Access forbidden: Super Admin privileges required"
+    });
+  }
+  next();
+};
+
 module.exports = {
   verifyToken,
-  requireAdmin
+  requireAdmin,
+  requireSuperAdmin
 };

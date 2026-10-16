@@ -228,10 +228,13 @@ exports.createGemstone = async (req, res) => {
         ? 1
         : 0;
 
+    const resolvedApprovalStatus = req.user.role === "ADMIN"
+      ? "pending"
+      : "approved";
     const query = `
       INSERT INTO gemstones 
-      (gemstone_id, category_id, name, color, carat, length, width, height, clarity, cut, shape, origin, treatment_status, price, stock, description, status, offer_rate, offer_start_date, offer_end_date)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (gemstone_id, category_id, name, color, carat, length, width, height, clarity, cut, shape, origin, treatment_status, price, stock, description, status, approval_status, offer_rate, offer_start_date, offer_end_date)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
     const values = [
@@ -252,6 +255,7 @@ exports.createGemstone = async (req, res) => {
       stock !== undefined ? parseInt(stock, 10) : 1,
       description || null,
       statusVal,
+      resolvedApprovalStatus,
       offer_rate === undefined || offer_rate === "" ? null : Number(offer_rate),
       offer_start_date || null,
       offer_end_date || null,
@@ -307,6 +311,80 @@ exports.createGemstone = async (req, res) => {
       success: false,
       message: "Failed to add gemstone",
       error: error.message,
+    });
+  }
+};
+
+exports.getPendingGemstones = async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      `SELECT g.*, c.name AS category_name
+       FROM gemstones g
+       LEFT JOIN categories c ON c.id = g.category_id
+       WHERE g.approval_status = 'pending'
+       ORDER BY g.id DESC`
+    );
+    const gemstonesWithMedia = await attachGemstoneMedia(rows);
+
+    return res.status(200).json({
+      success: true,
+      count: gemstonesWithMedia.length,
+      data: gemstonesWithMedia
+    });
+  } catch (error) {
+    console.error("Fetch Pending Gemstones Error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch pending gemstones",
+      error: error.message
+    });
+  }
+};
+
+exports.updateGemstoneApproval = async (req, res) => {
+  const { id } = req.params;
+  const { approval_status } = req.body;
+
+  if (!["approved", "rejected"].includes(approval_status)) {
+    return res.status(400).json({
+      success: false,
+      message: "Approval status must be approved or rejected."
+    });
+  }
+
+  try {
+    const [result] = await db.query(
+      `UPDATE gemstones
+       SET approval_status = ?,
+           status = CASE WHEN ? = 'approved' THEN 1 ELSE 0 END
+       WHERE id = ? AND approval_status = 'pending'`,
+      [approval_status, approval_status, id]
+    );
+
+    if (result.affectedRows === 0) {
+      const [rows] = await db.query(
+        "SELECT id FROM gemstones WHERE id = ?",
+        [id]
+      );
+      return res.status(rows.length ? 409 : 404).json({
+        success: false,
+        message: rows.length
+          ? "Gemstone is no longer awaiting approval."
+          : "Gemstone not found."
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `Gemstone ${approval_status} successfully.`,
+      data: { id: Number(id), approval_status }
+    });
+  } catch (error) {
+    console.error("Update Gemstone Approval Error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update gemstone approval.",
+      error: error.message
     });
   }
 };
@@ -449,6 +527,7 @@ exports.updateGemstone = async (req, res) => {
 
     const [existing] = await db.query("SELECT * FROM gemstones WHERE id = ?", [id]);
     if (!existing || existing.length === 0) {
+      await removeUploadedFiles(req);
       return res.status(404).json({
         success: false,
         message: "Gemstone not found",
@@ -471,6 +550,7 @@ exports.updateGemstone = async (req, res) => {
       updatedOfferEndDate
     );
     if (offerValidationError) {
+      await removeUploadedFiles(req);
       return res.status(400).json({ success: false, message: offerValidationError });
     }
 
@@ -506,10 +586,10 @@ exports.updateGemstone = async (req, res) => {
       name !== undefined ? name : current.name,
       category_id !== undefined ? category_id : current.category_id,
       color !== undefined ? color : current.color,
-      carat !== undefined ? carat : current.carat,
-      length !== undefined ? length : current.length,
-      width !== undefined ? width : current.width,
-      height !== undefined ? height : current.height,
+      carat !== undefined ? (carat === "" ? null : carat) : current.carat,
+      length !== undefined ? (length === "" ? null : length) : current.length,
+      width !== undefined ? (width === "" ? null : width) : current.width,
+      height !== undefined ? (height === "" ? null : height) : current.height,
       clarity !== undefined ? clarity : current.clarity,
       cut !== undefined ? cut : current.cut,
       shape !== undefined ? shape : current.shape,
@@ -525,13 +605,57 @@ exports.updateGemstone = async (req, res) => {
       id,
     ];
 
-    await db.query(query, values);
+    const connection = await db.getConnection();
+    try {
+      await connection.beginTransaction();
+      await connection.query(query, values);
+
+      for (const mediaField of mediaFields) {
+        const file = req.files?.[mediaField.field]?.[0];
+        if (!file) continue;
+
+        const matchingTypes = mediaField.type === "front"
+          ? ["front", "main"]
+          : [mediaField.type];
+        const [existingMedia] = await connection.query(
+          `SELECT id FROM gemstone_images
+           WHERE gemstone_id = ? AND image_type IN (${matchingTypes.map(() => "?").join(", ")})
+           ORDER BY id ASC LIMIT 1`,
+          [id, ...matchingTypes]
+        );
+        const imageUrl = `/uploads/gemstones/${file.filename}`;
+
+        if (existingMedia.length) {
+          await connection.query(
+            `UPDATE gemstone_images
+             SET image_url = ?, image_type = ?, is_primary = ?
+             WHERE id = ?`,
+            [imageUrl, mediaField.type, mediaField.primary ? 1 : 0, existingMedia[0].id]
+          );
+        } else {
+          await connection.query(
+            `INSERT INTO gemstone_images
+             (gemstone_id, image_url, image_type, is_primary)
+             VALUES (?, ?, ?, ?)`,
+            [id, imageUrl, mediaField.type, mediaField.primary ? 1 : 0]
+          );
+        }
+      }
+
+      await connection.commit();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
 
     return res.status(200).json({
       success: true,
       message: "Gemstone updated successfully",
     });
   } catch (error) {
+    await removeUploadedFiles(req);
     console.error("Update Gemstone Error:", error);
     return res.status(500).json({
       success: false,

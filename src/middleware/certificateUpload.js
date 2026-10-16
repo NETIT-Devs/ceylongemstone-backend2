@@ -37,7 +37,10 @@ const upload = multer({
 });
 
 const uploadCertificate = (req, res, next) => {
-    upload.single("certificate")(req, res, (error) => {
+    upload.fields([
+        { name: "certificate", maxCount: 1 },
+        { name: "certificate_url", maxCount: 1 }
+    ])(req, res, (error) => {
         if (!error) {
             next();
             return;

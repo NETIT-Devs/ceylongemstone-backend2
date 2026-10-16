@@ -10,10 +10,10 @@ exports.createReview = async (req, res) => {
       comment
     } = req.body;
 
-    if (!user_id || !gemstone_id || !rating || !comment) {
+    if (!user_id || !rating || !comment) {
       return res.status(400).json({
         success: false,
-        message: "user_id, gemstone_id, rating and comment are required"
+        message: "user_id, rating and comment are required"
       });
     }
 
@@ -25,25 +25,26 @@ exports.createReview = async (req, res) => {
       });
     }
 
-    // Check gemstone exists
-    const [gemstone] = await db.query(
-      "SELECT id FROM gemstones WHERE id = ? OR gemstone_id = ?",
-      [gemstone_id, gemstone_id]
-    );
+    let gemstoneDbId = null;
+    if (gemstone_id !== undefined && gemstone_id !== null && gemstone_id !== "") {
+      const [gemstone] = await db.query(
+        "SELECT id FROM gemstones WHERE id = ? OR gemstone_id = ?",
+        [gemstone_id, gemstone_id]
+      );
 
-    if (gemstone.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Gemstone not found"
-      });
+      if (gemstone.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Gemstone not found"
+        });
+      }
+      gemstoneDbId = gemstone[0].id;
     }
-
-    const gemstoneDbId = gemstone[0].id;
 
     const [result] = await db.query(
       `INSERT INTO reviews
        (user_id, gemstone_id, rating, comment, status, created_at)
-       VALUES (?, ?, ?, ?, 'PENDING', NOW())`,
+       VALUES (?, ?, ?, ?, 'APPROVED', NOW())`,
       [
         user_id,
         gemstoneDbId,
@@ -76,6 +77,8 @@ exports.getReviews = async (req, res) => {
       `SELECT
         r.id,
         r.user_id,
+        u.name AS name,
+        u.email AS email,
         r.gemstone_id,
         g.gemstone_id AS gemstone_code,
         g.name AS gemstone_name,
@@ -84,7 +87,8 @@ exports.getReviews = async (req, res) => {
         r.status,
         r.created_at
       FROM reviews r
-      INNER JOIN gemstones g ON r.gemstone_id = g.id
+      LEFT JOIN users u ON r.user_id = u.id
+      LEFT JOIN gemstones g ON r.gemstone_id = g.id
       ORDER BY r.created_at DESC`
     );
 
@@ -161,26 +165,29 @@ exports.deleteReview = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const [review] = await db.query(
-      "SELECT id FROM reviews WHERE id = ?",
-      [id]
-    );
-
-    if (review.length === 0) {
+    const reviewId = Number(id);
+    if (!Number.isSafeInteger(reviewId) || reviewId < 1) {
       return res.status(404).json({
         success: false,
         message: "Review not found"
       });
     }
 
-    await db.query(
+    const [result] = await db.query(
       "DELETE FROM reviews WHERE id = ?",
-      [id]
+      [reviewId]
     );
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Review not found"
+      });
+    }
 
     return res.status(200).json({
       success: true,
-      message: "Review deleted successfully"
+      message: "Review deleted successfully",
+      review_id: reviewId
     });
 
   } catch (error) {

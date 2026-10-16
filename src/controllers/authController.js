@@ -161,6 +161,86 @@ const register = async (req, res) => {
   }
 };
 
+const createAdminUser = async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    return res.status(403).json({
+      success: false,
+      message: "Only Super Administrators can create admin accounts"
+    });
+  }
+
+  const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
+  const email = typeof req.body.email === "string"
+    ? req.body.email.trim().toLowerCase()
+    : "";
+  const password = typeof req.body.password === "string" ? req.body.password : "";
+  const phone = typeof req.body.phone === "string" ? req.body.phone.trim() : "";
+
+  if (!name || !email || !password) {
+    return res.status(400).json({
+      success: false,
+      message: "Name, email, and temporary password are required"
+    });
+  }
+
+  if (password.length < 6) {
+    return res.status(400).json({
+      success: false,
+      message: "Temporary password must be at least 6 characters long"
+    });
+  }
+
+  try {
+    const [existingUsers] = await db.query(
+      "SELECT id FROM users WHERE email = ?",
+      [email]
+    );
+
+    if (existingUsers.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: "A user with this email address already exists"
+      });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const [result] = await db.query(
+      `INSERT INTO users
+        (name, email, password, role, approval_status, phone, status)
+       VALUES (?, ?, ?, 'ADMIN', 'APPROVED', ?, 1)`,
+      [name, email, hashedPassword, phone || null]
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: "Admin account created successfully",
+      user: {
+        id: result.insertId,
+        name,
+        email,
+        role: "ADMIN",
+        approval_status: "APPROVED",
+        phone: phone || null,
+        status: 1
+      }
+    });
+  } catch (error) {
+    if (error.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({
+        success: false,
+        message: "A user with this email address already exists"
+      });
+    }
+
+    console.error("Create Admin User Error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to create admin account",
+      error: error.message
+    });
+  }
+};
+
 
 // ==========================================
 // User Login
@@ -196,7 +276,14 @@ const login = async (req, res) => {
     // Check Account Status
     // ==========================================
 
-    if (user.status !== 1 && user.status !== true) {
+    if (Number(user.status) === 0) {
+      return res.status(403).json({
+        success: false,
+        message: "Your account has been suspended"
+      });
+    }
+
+    if (Number(user.status) !== 1) {
       return res.status(403).json({
         success: false,
         message:
@@ -330,12 +417,132 @@ const getProfile = async (req, res) => {
   }
 };
 
+const deleteAdminUser = async (req, res) => {
+  const userId = Number(req.params.id);
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    return res.status(400).json({
+      success: false,
+      message: "A valid admin user ID is required"
+    });
+  }
+
+  if (req.user.role !== "SUPER_ADMIN") {
+    return res.status(403).json({
+      success: false,
+      message: "Only Super Administrators can remove admin accounts"
+    });
+  }
+
+  if (Number(req.user.id) === userId) {
+    return res.status(403).json({
+      success: false,
+      message: "You cannot remove your own account"
+    });
+  }
+
+  try {
+    const [result] = await db.query(
+      "DELETE FROM users WHERE id = ? AND role = 'ADMIN'",
+      [userId]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Admin account not found"
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Admin account deleted successfully",
+      id: userId
+    });
+  } catch (error) {
+    console.error("Delete Admin User Error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to delete admin account",
+      error: error.message
+    });
+  }
+};
+
+const updateAdminUserStatus = async (req, res) => {
+  const userId = Number(req.params.id);
+  const status = Number(req.body.status);
+
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    return res.status(400).json({
+      success: false,
+      message: "A valid admin user ID is required"
+    });
+  }
+
+  if (status !== 0 && status !== 1) {
+    return res.status(400).json({
+      success: false,
+      message: "Admin account status must be 0 or 1"
+    });
+  }
+
+  if (req.user.role !== "SUPER_ADMIN") {
+    return res.status(403).json({
+      success: false,
+      message: "Only Super Administrators can modify admin accounts"
+    });
+  }
+
+  if (Number(req.user.id) === userId) {
+    return res.status(403).json({
+      success: false,
+      message: "You cannot suspend your own active administrative session"
+    });
+  }
+
+  try {
+    const [existingUsers] = await db.query(
+      "SELECT id FROM users WHERE id = ? AND role = 'ADMIN'",
+      [userId]
+    );
+
+    if (!existingUsers.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Admin account not found"
+      });
+    }
+
+    await db.query(
+      "UPDATE users SET status = ? WHERE id = ? AND role = 'ADMIN'",
+      [status, userId]
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: status === 0 ? "Admin account suspended" : "Admin account activated",
+      id: userId,
+      status
+    });
+  } catch (error) {
+    console.error("Update Admin User Status Error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update admin account status",
+      error: error.message
+    });
+  }
+};
+
 
 // ==========================================
 // Export Controllers
 // ==========================================
 module.exports = {
   register,
+  createAdminUser,
   login,
-  getProfile
+  getProfile,
+  deleteAdminUser,
+  updateAdminUserStatus
 };

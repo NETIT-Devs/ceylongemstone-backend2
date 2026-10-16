@@ -12,6 +12,14 @@ const parseFloatSafe = (value, fallback = null) => {
   return Number.isNaN(n) ? fallback : n;
 };
 
+const dateOnly = (value) => {
+  if (!value) return null;
+  if (value instanceof Date) {
+    return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+  }
+  return String(value).slice(0, 10);
+};
+
 // ─── CREATE ──────────────────────────────────────────────────────────────────
 
 exports.createJewellery = async (req, res) => {
@@ -28,6 +36,9 @@ exports.createJewellery = async (req, res) => {
       currency,
       stock_quantity,
       image_url,
+      offer_rate,
+      offer_start_date,
+      offer_end_date,
       is_handcrafted,
       status,
     } = req.body;
@@ -67,7 +78,37 @@ exports.createJewellery = async (req, res) => {
       "inactive",
       "draft",
     ];
-    const resolvedStatus = validStatuses.includes(status) ? status : "pending";
+    const resolvedStatus = req.user.role === "ADMIN"
+      ? "pending"
+      : validStatuses.includes(status)
+        ? status
+        : "pending";
+    const offerRate =
+      offer_rate === "" || offer_rate == null
+        ? null
+        : parseFloatSafe(offer_rate);
+
+    if (
+      offer_rate !== "" &&
+      offer_rate != null &&
+      (!Number.isFinite(offerRate) || offerRate < 1 || offerRate > 100)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "offer_rate must be between 1 and 100.",
+      });
+    }
+    if (
+      offerRate !== null &&
+      (!offer_start_date ||
+        !offer_end_date ||
+        dateOnly(offer_start_date) > dateOnly(offer_end_date))
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid offer start date and end date are required.",
+      });
+    }
 
     const createdBy = req.user?.id ?? null;
 
@@ -75,8 +116,9 @@ exports.createJewellery = async (req, res) => {
       `INSERT INTO jewellery
          (product_code, product_name, jewellery_type, gemstone_type, color,
           description, material, price, currency, stock_quantity,
-          image_url, is_handcrafted, status, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           image_url, offer_rate, offer_start_date, offer_end_date,
+           is_handcrafted, status, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         code,
         product_name.trim(),
@@ -88,7 +130,12 @@ exports.createJewellery = async (req, res) => {
         parseFloatSafe(price),
         currency?.trim() || "USD",
         parseIntSafe(stock_quantity, 1),
-        image_url?.trim() || null,
+        req.file
+          ? `/uploads/gemstones/${req.file.filename}`
+          : image_url?.trim() || null,
+        offerRate,
+        offer_start_date || null,
+        offer_end_date || null,
         isHandcrafted,
         resolvedStatus,
         createdBy,
@@ -141,11 +188,16 @@ exports.getAllJewellery = async (req, res) => {
     query += " ORDER BY id DESC";
 
     const [rows] = await db.query(query, values);
+    const jewellery = rows.map((item) => ({
+      ...item,
+      offer_start_date: dateOnly(item.offer_start_date),
+      offer_end_date: dateOnly(item.offer_end_date),
+    }));
 
     return res.status(200).json({
       success: true,
-      count: rows.length,
-      data: rows,
+      count: jewellery.length,
+      data: jewellery,
     });
   } catch (error) {
     console.error("Get All Jewellery Error:", error);
@@ -174,7 +226,14 @@ exports.getJewelleryById = async (req, res) => {
       });
     }
 
-    return res.status(200).json({ success: true, data: rows[0] });
+    return res.status(200).json({
+      success: true,
+      data: {
+        ...rows[0],
+        offer_start_date: dateOnly(rows[0].offer_start_date),
+        offer_end_date: dateOnly(rows[0].offer_end_date),
+      },
+    });
   } catch (error) {
     console.error("Get Jewellery By Id Error:", error);
     return res.status(500).json({
@@ -214,6 +273,9 @@ exports.updateJewellery = async (req, res) => {
       currency,
       stock_quantity,
       image_url,
+      offer_rate,
+      offer_start_date,
+      offer_end_date,
       is_handcrafted,
       status,
     } = req.body;
@@ -236,6 +298,45 @@ exports.updateJewellery = async (req, res) => {
           ? 1
           : 0
         : current.is_handcrafted;
+    const updatedOfferRate =
+      offer_rate !== undefined
+        ? offer_rate === "" || offer_rate === null
+          ? null
+          : parseFloatSafe(offer_rate)
+        : current.offer_rate;
+    const updatedOfferStartDate =
+      offer_start_date !== undefined
+        ? offer_start_date || null
+        : current.offer_start_date;
+    const updatedOfferEndDate =
+      offer_end_date !== undefined
+        ? offer_end_date || null
+        : current.offer_end_date;
+
+    if (
+      offer_rate !== undefined &&
+      offer_rate !== "" &&
+      offer_rate !== null &&
+      (!Number.isFinite(updatedOfferRate) ||
+        updatedOfferRate < 1 ||
+        updatedOfferRate > 100)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "offer_rate must be between 1 and 100.",
+      });
+    }
+    if (
+      updatedOfferRate !== null &&
+      (!updatedOfferStartDate ||
+        !updatedOfferEndDate ||
+        dateOnly(updatedOfferStartDate) > dateOnly(updatedOfferEndDate))
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid offer start date and end date are required.",
+      });
+    }
 
     const [updateResult] = await db.query(
       `UPDATE jewellery SET
@@ -250,6 +351,9 @@ exports.updateJewellery = async (req, res) => {
          currency        = ?,
          stock_quantity  = ?,
          image_url       = ?,
+         offer_rate      = ?,
+         offer_start_date = ?,
+         offer_end_date   = ?,
          is_handcrafted  = ?,
          status          = ?
        WHERE id = ?`,
@@ -266,11 +370,20 @@ exports.updateJewellery = async (req, res) => {
         stock_quantity !== undefined
           ? parseIntSafe(stock_quantity, current.stock_quantity)
           : current.stock_quantity,
-        image_url !== undefined ? image_url?.trim() || null : current.image_url,
+        req.file
+          ? `/uploads/gemstones/${req.file.filename}`
+          : image_url !== undefined
+            ? image_url?.trim() || null
+            : current.image_url,
+        updatedOfferRate,
+        updatedOfferStartDate,
+        updatedOfferEndDate,
         isHandcrafted,
-        status !== undefined && validStatuses.includes(status)
-          ? status
-          : current.status,
+        req.user.role === "ADMIN"
+          ? current.status
+          : status !== undefined && validStatuses.includes(status)
+            ? status
+            : current.status,
         id,
       ]
     );
@@ -308,31 +421,28 @@ exports.updateJewelleryStatus = async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
-    const validStatuses = [
-      "pending",
-      "approved",
-      "rejected",
-      "active",
-      "inactive",
-      "draft",
-    ];
-
-    if (!status || !validStatuses.includes(status)) {
+    if (!["approved", "rejected"].includes(status)) {
       return res.status(400).json({
         success: false,
-        message: `Invalid status. Must be one of: ${validStatuses.join(", ")}`,
+        message: "Approval status must be approved or rejected.",
       });
     }
 
     const [result] = await db.query(
-      "UPDATE jewellery SET status = ? WHERE id = ?",
+      "UPDATE jewellery SET status = ? WHERE id = ? AND status = 'pending'",
       [status, id]
     );
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({
+      const [rows] = await db.query(
+        "SELECT id FROM jewellery WHERE id = ?",
+        [id]
+      );
+      return res.status(rows.length ? 409 : 404).json({
         success: false,
-        message: "Jewellery item not found.",
+        message: rows.length
+          ? "Jewellery item is no longer awaiting approval."
+          : "Jewellery item not found.",
       });
     }
 
@@ -347,6 +457,32 @@ exports.updateJewelleryStatus = async (req, res) => {
       success: false,
       message: "Failed to update jewellery status.",
       error: error.message,
+    });
+  }
+};
+
+exports.getPendingJewellery = async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      `SELECT id, product_code, product_name, jewellery_type, gemstone_type,
+              color, description, material, price, currency, stock_quantity,
+              image_url, is_handcrafted, status, created_at
+       FROM jewellery
+       WHERE status = 'pending'
+       ORDER BY created_at DESC, id DESC`
+    );
+
+    return res.status(200).json({
+      success: true,
+      count: rows.length,
+      data: rows
+    });
+  } catch (error) {
+    console.error("Fetch Pending Jewellery Error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch pending jewellery.",
+      error: error.message
     });
   }
 };
