@@ -1,4 +1,24 @@
 const db = require("../config/db");
+const {
+  removeUploadedFile,
+  removeUploadedFileObjects,
+} = require("../utils/uploadFileCleanup");
+
+const removeUnreferencedGemstoneImage = async (imageUrl) => {
+  if (!imageUrl) return;
+
+  try {
+    const [references] = await db.query(
+      "SELECT id FROM gemstone_images WHERE image_url = ? LIMIT 1",
+      [imageUrl]
+    );
+    if (references.length === 0) {
+      await removeUploadedFile(imageUrl);
+    }
+  } catch (error) {
+    console.error("Gemstone image reference check failed:", error);
+  }
+};
 
 // Upload gemstone image
 exports.uploadGemstoneImage = async (req, res) => {
@@ -14,6 +34,7 @@ exports.uploadGemstoneImage = async (req, res) => {
 
     // gemstone_id is the only required field
     if (!gemstone_id) {
+      if (req.file) await removeUploadedFileObjects([req.file]);
       return res.status(400).json({
         success: false,
         message: "gemstone_id is required",
@@ -27,6 +48,7 @@ exports.uploadGemstoneImage = async (req, res) => {
     );
 
     if (gemstones.length === 0) {
+      if (req.file) await removeUploadedFileObjects([req.file]);
       return res.status(404).json({
         success: false,
         message: "Gemstone not found",
@@ -79,6 +101,7 @@ exports.uploadGemstoneImage = async (req, res) => {
     });
 
   } catch (error) {
+    if (req.file) await removeUploadedFileObjects([req.file]);
     console.error("Upload Gemstone Image Error:", error);
 
     return res.status(500).json({
@@ -206,13 +229,12 @@ exports.deleteGemstoneImage = async (req, res) => {
       });
     }
 
-    const image = images[0];
-
     // Delete from database
     await db.query(
       "DELETE FROM gemstone_images WHERE id = ?",
       [id]
     );
+    await removeUnreferencedGemstoneImage(images[0].image_url);
 
     return res.status(200).json({
       success: true,

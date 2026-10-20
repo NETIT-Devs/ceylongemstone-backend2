@@ -1,6 +1,144 @@
 const db = require("../config/db");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
+
+const forgotPassword = async (req, res) => {
+  const email = typeof req.body?.email === "string"
+    ? req.body.email.trim().toLowerCase()
+    : "";
+
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({
+      success: false,
+      message: "A valid email address is required"
+    });
+  }
+
+  try {
+    const [users] = await db.query(
+      "SELECT id FROM users WHERE email = ? LIMIT 1",
+      [email]
+    );
+
+    if (!users.length) {
+      return res.status(404).json({
+        success: false,
+        message: "No account was found with that email address"
+      });
+    }
+
+    const token = crypto.randomBytes(32).toString("hex");
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+
+    const [updateResult] = await db.execute(
+      `UPDATE users
+       SET password_reset_token = ?,
+           password_reset_expires = DATE_ADD(NOW(), INTERVAL 1 HOUR)
+       WHERE id = ?`,
+      [tokenHash, users[0].id]
+    );
+
+    if (updateResult.affectedRows !== 1) {
+      throw new Error("Password reset token was not saved for the matching user");
+    }
+
+    const [updatedUsers] = await db.execute(
+      `SELECT password_reset_expires
+       FROM users
+       WHERE id = ? AND password_reset_token = ?
+       LIMIT 1`,
+      [users[0].id, tokenHash]
+    );
+
+    if (!updatedUsers.length) {
+      throw new Error("Saved password reset token could not be verified");
+    }
+
+    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+    const resetUrl = new URL("/reset-password", frontendUrl);
+    resetUrl.searchParams.set("token", token);
+
+    return res.status(200).json({
+      success: true,
+      message: "Password reset link generated successfully",
+      resetLink: resetUrl.toString(),
+      expiresAt: updatedUsers[0].password_reset_expires
+    });
+  } catch (error) {
+    console.error("Forgot Password Error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to generate a password reset link"
+    });
+  }
+};
+
+const resetPassword = async (req, res) => {
+  const token = typeof req.body?.token === "string" ? req.body.token : "";
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+
+  if (!/^[a-f0-9]{64}$/i.test(token)) {
+    return res.status(400).json({
+      success: false,
+      message: "A valid password reset token is required"
+    });
+  }
+
+  if (password.length < 8) {
+    return res.status(400).json({
+      success: false,
+      message: "Password must be at least 8 characters long"
+    });
+  }
+
+  try {
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+    const [users] = await db.query(
+      `SELECT id
+       FROM users
+       WHERE password_reset_token = ?
+         AND password_reset_expires > NOW()
+       LIMIT 1`,
+      [tokenHash]
+    );
+
+    if (!users.length) {
+      return res.status(400).json({
+        success: false,
+        message: "Password reset token is invalid or expired"
+      });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const [result] = await db.query(
+      `UPDATE users
+       SET password = ?, password_reset_token = NULL, password_reset_expires = NULL
+       WHERE id = ?
+         AND password_reset_token = ?
+         AND password_reset_expires > NOW()`,
+      [hashedPassword, users[0].id, tokenHash]
+    );
+
+    if (result.affectedRows !== 1) {
+      return res.status(400).json({
+        success: false,
+        message: "Password reset token is invalid or expired"
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Password has been reset successfully"
+    });
+  } catch (error) {
+    console.error("Reset Password Error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to reset password"
+    });
+  }
+};
 
 // ==========================================
 // User Registration
@@ -236,6 +374,37 @@ const createAdminUser = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to create admin account",
+      error: error.message
+    });
+  }
+};
+
+const getAdminUsers = async (req, res) => {
+  if (req.user.role !== "SUPER_ADMIN") {
+    return res.status(403).json({
+      success: false,
+      message: "Only Super Administrators can view admin accounts"
+    });
+  }
+
+  try {
+    const [users] = await db.query(
+      `SELECT id, name, email, role, approval_status, phone, status, created_at
+       FROM users
+       WHERE role = 'ADMIN'
+       ORDER BY created_at DESC, id DESC`
+    );
+
+    return res.status(200).json({
+      success: true,
+      count: users.length,
+      users
+    });
+  } catch (error) {
+    console.error("Get Admin Users Error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch admin accounts",
       error: error.message
     });
   }
@@ -539,8 +708,11 @@ const updateAdminUserStatus = async (req, res) => {
 // Export Controllers
 // ==========================================
 module.exports = {
+  forgotPassword,
+  resetPassword,
   register,
   createAdminUser,
+  getAdminUsers,
   login,
   getProfile,
   deleteAdminUser,

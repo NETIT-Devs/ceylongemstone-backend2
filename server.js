@@ -9,6 +9,7 @@ const path = require('path');
 
 // Import database configuration instance
 const db = require('./src/config/db');
+const passport = require('./src/config/passport');
 
 // Import all API route modules
 const authRoutes = require('./src/routes/authRoutes');
@@ -66,6 +67,7 @@ app.use(cors({
 // Parse incoming JSON and URL-encoded payloads from the client
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(passport.initialize());
 
 // Health check endpoint to verify server and database status
 app.get('/api/health', (req, res) => {
@@ -137,7 +139,7 @@ app.listen(PORT, async () => {
     // Verify database connection on startup with clean checkmark logs
     try {
         await db.query('SELECT 1');
-        console.log(`✅ Database connected successfully (${process.env.DB_NAME || 'srilankan_gemstone'})`);
+        console.log(`✅ Database connected successfully (${process.env.DB_NAME || 'srilankan_gemstones_db'})`);
         console.log(`==================================================\n`);
     } catch (err) {
         console.error(`❌ Database connection FAILED: ${err.message}`);

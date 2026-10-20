@@ -3,33 +3,42 @@ const db = require("../config/db");
 // Create Review
 exports.createReview = async (req, res) => {
   try {
-    const {
-      user_id,
-      gemstone_id,
-      rating,
-      comment
-    } = req.body;
+    const userId = Number(req.user?.id);
+    const { gemstone_id, rating, comment } = req.body;
+    const numericRating = Number(rating);
+    const reviewComment = typeof comment === "string" ? comment.trim() : "";
 
-    if (!user_id || !rating || !comment) {
+    if (!Number.isSafeInteger(userId) || userId < 1 || !reviewComment) {
       return res.status(400).json({
         success: false,
-        message: "user_id, rating and comment are required"
+        message: "A valid authenticated user and review comment are required"
       });
     }
 
-    // Validate rating
-    if (Number(rating) < 1 || Number(rating) > 5) {
+    if (!Number.isInteger(numericRating) || numericRating < 1 || numericRating > 5) {
       return res.status(400).json({
         success: false,
-        message: "Rating must be between 1 and 5"
+        message: "Rating must be a whole number between 1 and 5"
+      });
+    }
+
+    const [users] = await db.query(
+      "SELECT id FROM users WHERE id = ? AND status = 1",
+      [userId]
+    );
+    if (users.length === 0) {
+      return res.status(401).json({
+        success: false,
+        message: "Your account is unavailable. Please log in again."
       });
     }
 
     let gemstoneDbId = null;
     if (gemstone_id !== undefined && gemstone_id !== null && gemstone_id !== "") {
+      const gemstoneReference = String(gemstone_id).trim();
       const [gemstone] = await db.query(
         "SELECT id FROM gemstones WHERE id = ? OR gemstone_id = ?",
-        [gemstone_id, gemstone_id]
+        [gemstoneReference, gemstoneReference]
       );
 
       if (gemstone.length === 0) {
@@ -44,12 +53,12 @@ exports.createReview = async (req, res) => {
     const [result] = await db.query(
       `INSERT INTO reviews
        (user_id, gemstone_id, rating, comment, status, created_at)
-       VALUES (?, ?, ?, ?, 'APPROVED', NOW())`,
+       VALUES (?, ?, ?, ?, 'PENDING', NOW())`,
       [
-        user_id,
+        userId,
         gemstoneDbId,
-        Number(rating),
-        comment
+        numericRating,
+        reviewComment
       ]
     );
 
@@ -70,8 +79,46 @@ exports.createReview = async (req, res) => {
   }
 };
 
-// Get all reviews
+// Public reviews only include content approved for display.
 exports.getReviews = async (req, res) => {
+  try {
+    const [reviews] = await db.query(
+      `SELECT
+        r.id,
+        r.user_id,
+        u.name AS name,
+        u.email AS email,
+        r.gemstone_id,
+        g.gemstone_id AS gemstone_code,
+        g.name AS gemstone_name,
+        r.rating,
+        r.comment,
+        r.status,
+        r.created_at
+      FROM reviews r
+      LEFT JOIN users u ON r.user_id = u.id
+      LEFT JOIN gemstones g ON r.gemstone_id = g.id
+      WHERE r.status = 'APPROVED'
+      ORDER BY r.created_at DESC`
+    );
+
+    return res.status(200).json({
+      success: true,
+      data: reviews
+    });
+
+  } catch (error) {
+    console.error("Get Reviews Error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch reviews",
+      error: error.message
+    });
+  }
+};
+
+exports.getAdminReviews = async (req, res) => {
   try {
     const [reviews] = await db.query(
       `SELECT
@@ -96,10 +143,8 @@ exports.getReviews = async (req, res) => {
       success: true,
       data: reviews
     });
-
   } catch (error) {
-    console.error("Get Reviews Error:", error);
-
+    console.error("Get Admin Reviews Error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to fetch reviews",

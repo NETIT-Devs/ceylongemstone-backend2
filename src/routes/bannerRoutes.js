@@ -11,15 +11,18 @@ const {
 } = require("../controllers/bannerController");
 
 const uploadBanner = require("../middleware/bannerUpload");
+const { verifyToken, requireAdmin } = require("../middleware/authMiddleware");
 
 const router = express.Router();
 
 // Create Banner
-router.post("/", createBanner);
+router.post("/", verifyToken, requireAdmin, createBanner);
 
 // Upload Banner Image / Video
 router.post(
   "/upload",
+  verifyToken,
+  requireAdmin,
   uploadBanner.single("media"),
   uploadBannerMedia
 );
@@ -34,9 +37,9 @@ router.get("/active", getActiveBanners);
 router.get("/:id", getBannerById);
 
 // Update Banner
-router.put("/:id", updateBanner);
+router.put("/:id", verifyToken, requireAdmin, updateBanner);
 
 // Delete Banner
-router.delete("/:id", deleteBanner);
+router.delete("/:id", verifyToken, requireAdmin, deleteBanner);
 
 module.exports = router;

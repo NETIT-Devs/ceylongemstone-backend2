@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const jewelleryController = require("../controllers/jewelleryController");
-const uploadJewelleryImage = require("../middleware/uploadMiddleware");
+const uploadJewelleryImage = require("../middleware/jewelleryUpload");
 const {
   verifyToken,
   requireAdmin,

@@ -1,4 +1,21 @@
 const db = require("../config/db");
+const { removeUploadedFile } = require("../utils/uploadFileCleanup");
+
+const removeUnreferencedBannerMedia = async (mediaUrl) => {
+  if (!mediaUrl) return;
+
+  try {
+    const [references] = await db.query(
+      "SELECT id FROM banners WHERE media_url = ? LIMIT 1",
+      [mediaUrl]
+    );
+    if (references.length === 0) {
+      await removeUploadedFile(mediaUrl);
+    }
+  } catch (error) {
+    console.error("Banner media reference check failed:", error);
+  }
+};
 
 // Create Banner
 const createBanner = async (req, res) => {
@@ -172,7 +189,7 @@ const updateBanner = async (req, res) => {
     } = req.body;
 
     const [existing] = await db.query(
-      "SELECT id FROM banners WHERE id = ?",
+      "SELECT id, media_url FROM banners WHERE id = ?",
       [id]
     );
 
@@ -215,6 +232,11 @@ const updateBanner = async (req, res) => {
       ]
     );
 
+    const updatedMediaUrl = media_url || existing[0].media_url;
+    if (updatedMediaUrl !== existing[0].media_url) {
+      await removeUnreferencedBannerMedia(existing[0].media_url);
+    }
+
     res.status(200).json({
       success: true,
       message: "Banner updated successfully"
@@ -237,6 +259,17 @@ const deleteBanner = async (req, res) => {
   try {
     const { id } = req.params;
 
+    const [existing] = await db.query(
+      "SELECT media_url FROM banners WHERE id = ?",
+      [id]
+    );
+    if (existing.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Banner not found"
+      });
+    }
+
     const [result] = await db.query(
       "DELETE FROM banners WHERE id = ?",
       [id]
@@ -248,6 +281,8 @@ const deleteBanner = async (req, res) => {
         message: "Banner not found"
       });
     }
+
+    await removeUnreferencedBannerMedia(existing[0].media_url);
 
     res.status(200).json({
       success: true,

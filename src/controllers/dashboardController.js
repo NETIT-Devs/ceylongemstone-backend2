@@ -1,10 +1,49 @@
 const db = require("../config/db");
 
 const LOW_STOCK_THRESHOLD = 3;
+const isValidDate = (value) => {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
+  }
+
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+};
 
 exports.getDashboardStats = async (req, res) => {
+  const { startDate, endDate } = req.query;
+
+  if ((startDate && !isValidDate(startDate)) || (endDate && !isValidDate(endDate))) {
+    return res.status(400).json({
+      success: false,
+      message: "startDate and endDate must be valid dates in YYYY-MM-DD format."
+    });
+  }
+
+  if (startDate && endDate && startDate > endDate) {
+    return res.status(400).json({
+      success: false,
+      message: "startDate must be on or before endDate."
+    });
+  }
+
+  const dateConditions = [];
+  const dateParams = [];
+
+  if (startDate) {
+    dateConditions.push("created_at >= ?");
+    dateParams.push(startDate);
+  }
+  if (endDate) {
+    dateConditions.push("created_at < DATE_ADD(?, INTERVAL 1 DAY)");
+    dateParams.push(endDate);
+  }
+  const dateFilter = dateConditions.length
+    ? ` AND ${dateConditions.join(" AND ")}`
+    : "";
+
   try {
-    const [[gemstoneCounts], [jewelleryCounts], [shipmentCounts]] = await Promise.all([
+    const [[gemstoneCounts], [jewelleryCounts], [orderCounts], [shipmentCounts]] = await Promise.all([
       db.query(
         `SELECT COUNT(*) AS active_count
          FROM gemstones
@@ -16,9 +55,16 @@ exports.getDashboardStats = async (req, res) => {
          WHERE LOWER(status) IN ('active', 'approved')`
       ),
       db.query(
+        `SELECT COUNT(*) AS total_orders
+         FROM orders
+         WHERE 1 = 1${dateFilter}`,
+        dateParams
+      ),
+      db.query(
         `SELECT COUNT(*) AS in_transit_count
          FROM orders
-         WHERE UPPER(order_status) IN ('DISPATCHED', 'SHIPPED', 'IN_TRANSIT', 'OUT_FOR_DELIVERY')`
+         WHERE UPPER(order_status) IN ('DISPATCHED', 'SHIPPED', 'IN_TRANSIT', 'OUT_FOR_DELIVERY')${dateFilter}`,
+        dateParams
       )
     ]);
 
@@ -31,6 +77,7 @@ exports.getDashboardStats = async (req, res) => {
         active_gemstones: activeGemstones,
         active_jewellery: activeJewellery,
         active_inventory: activeGemstones + activeJewellery,
+        total_orders: Number(orderCounts[0]?.total_orders || 0),
         shipments_in_transit: Number(shipmentCounts[0]?.in_transit_count || 0)
       }
     });

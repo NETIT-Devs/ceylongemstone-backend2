@@ -1,4 +1,8 @@
 const db = require("../config/db");
+const {
+  removeUploadedFile,
+  removeUploadedFileObjects,
+} = require("../utils/uploadFileCleanup");
 
 // ─── Helper ──────────────────────────────────────────────────────────────────
 
@@ -18,6 +22,22 @@ const dateOnly = (value) => {
     return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
   }
   return String(value).slice(0, 10);
+};
+
+const removeUnreferencedJewelleryImage = async (imageUrl) => {
+  if (!imageUrl) return;
+
+  try {
+    const [references] = await db.query(
+      "SELECT id FROM jewellery WHERE image_url = ? LIMIT 1",
+      [imageUrl]
+    );
+    if (references.length === 0) {
+      await removeUploadedFile(imageUrl);
+    }
+  } catch (error) {
+    console.error("Jewellery image reference check failed:", error);
+  }
 };
 
 // ─── CREATE ──────────────────────────────────────────────────────────────────
@@ -44,6 +64,7 @@ exports.createJewellery = async (req, res) => {
     } = req.body;
 
     if (!product_name || !product_name.trim()) {
+      if (req.file) await removeUploadedFileObjects([req.file]);
       return res.status(400).json({
         success: false,
         message: "product_name is required.",
@@ -51,6 +72,7 @@ exports.createJewellery = async (req, res) => {
     }
 
     if (price === undefined || price === null || price === "") {
+      if (req.file) await removeUploadedFileObjects([req.file]);
       return res.status(400).json({
         success: false,
         message: "price is required.",
@@ -93,6 +115,7 @@ exports.createJewellery = async (req, res) => {
       offer_rate != null &&
       (!Number.isFinite(offerRate) || offerRate < 1 || offerRate > 100)
     ) {
+      if (req.file) await removeUploadedFileObjects([req.file]);
       return res.status(400).json({
         success: false,
         message: "offer_rate must be between 1 and 100.",
@@ -104,6 +127,7 @@ exports.createJewellery = async (req, res) => {
         !offer_end_date ||
         dateOnly(offer_start_date) > dateOnly(offer_end_date))
     ) {
+      if (req.file) await removeUploadedFileObjects([req.file]);
       return res.status(400).json({
         success: false,
         message: "A valid offer start date and end date are required.",
@@ -131,7 +155,7 @@ exports.createJewellery = async (req, res) => {
         currency?.trim() || "USD",
         parseIntSafe(stock_quantity, 1),
         req.file
-          ? `/uploads/gemstones/${req.file.filename}`
+          ? `/uploads/jewellery/${req.file.filename}`
           : image_url?.trim() || null,
         offerRate,
         offer_start_date || null,
@@ -149,6 +173,7 @@ exports.createJewellery = async (req, res) => {
       product_code: code,
     });
   } catch (error) {
+    if (req.file) await removeUploadedFileObjects([req.file]);
     console.error("Create Jewellery Error:", error);
     if (error.code === "ER_DUP_ENTRY") {
       return res.status(409).json({
@@ -254,6 +279,7 @@ exports.updateJewellery = async (req, res) => {
       [id]
     );
     if (!existing || existing.length === 0) {
+      if (req.file) await removeUploadedFileObjects([req.file]);
       return res.status(404).json({
         success: false,
         message: "Jewellery item not found.",
@@ -321,6 +347,7 @@ exports.updateJewellery = async (req, res) => {
         updatedOfferRate < 1 ||
         updatedOfferRate > 100)
     ) {
+      if (req.file) await removeUploadedFileObjects([req.file]);
       return res.status(400).json({
         success: false,
         message: "offer_rate must be between 1 and 100.",
@@ -332,6 +359,7 @@ exports.updateJewellery = async (req, res) => {
         !updatedOfferEndDate ||
         dateOnly(updatedOfferStartDate) > dateOnly(updatedOfferEndDate))
     ) {
+      if (req.file) await removeUploadedFileObjects([req.file]);
       return res.status(400).json({
         success: false,
         message: "A valid offer start date and end date are required.",
@@ -371,7 +399,7 @@ exports.updateJewellery = async (req, res) => {
           ? parseIntSafe(stock_quantity, current.stock_quantity)
           : current.stock_quantity,
         req.file
-          ? `/uploads/gemstones/${req.file.filename}`
+          ? `/uploads/jewellery/${req.file.filename}`
           : image_url !== undefined
             ? image_url?.trim() || null
             : current.image_url,
@@ -395,11 +423,21 @@ exports.updateJewellery = async (req, res) => {
       });
     }
 
+    const updatedImageUrl = req.file
+      ? `/uploads/jewellery/${req.file.filename}`
+      : image_url !== undefined
+        ? image_url?.trim() || null
+        : current.image_url;
+    if (updatedImageUrl !== current.image_url) {
+      await removeUnreferencedJewelleryImage(current.image_url);
+    }
+
     return res.status(200).json({
       success: true,
       message: "Jewellery item updated successfully.",
     });
   } catch (error) {
+    if (req.file) await removeUploadedFileObjects([req.file]);
     console.error("Update Jewellery Error:", error);
     if (error.code === "ER_DUP_ENTRY") {
       return res.status(409).json({
@@ -492,6 +530,17 @@ exports.getPendingJewellery = async (req, res) => {
 exports.deleteJewellery = async (req, res) => {
   try {
     const { id } = req.params;
+    const [existing] = await db.query(
+      "SELECT image_url FROM jewellery WHERE id = ?",
+      [id]
+    );
+    if (!existing.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Jewellery item not found.",
+      });
+    }
+
     const [result] = await db.query(
       "DELETE FROM jewellery WHERE id = ?",
       [id]
@@ -503,6 +552,8 @@ exports.deleteJewellery = async (req, res) => {
         message: "Jewellery item not found.",
       });
     }
+
+    await removeUnreferencedJewelleryImage(existing[0].image_url);
 
     return res.status(200).json({
       success: true,

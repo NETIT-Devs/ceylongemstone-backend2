@@ -6,14 +6,32 @@ exports.createOrderItem = async (req, res) => {
     const {
       order_id,
       gemstone_id,
+      jewellery_id,
       quantity,
-      price
+      price,
+      currency = "USD"
     } = req.body;
 
-    if (!order_id || !gemstone_id || !quantity || !price) {
+    const hasGemstone = gemstone_id !== undefined && gemstone_id !== null;
+    const hasJewellery = jewellery_id !== undefined && jewellery_id !== null;
+    const productId = hasJewellery ? jewellery_id : gemstone_id;
+    const productTable = hasJewellery ? "jewellery" : "gemstones";
+
+    if (
+      !order_id ||
+      hasGemstone === hasJewellery ||
+      !Number.isSafeInteger(Number(productId)) ||
+      Number(productId) < 1 ||
+      !Number.isSafeInteger(Number(quantity)) ||
+      Number(quantity) < 1 ||
+      !Number.isFinite(Number(price)) ||
+      Number(price) < 0 ||
+      typeof currency !== "string" ||
+      currency.trim().length !== 3
+    ) {
       return res.status(400).json({
         success: false,
-        message: "order_id, gemstone_id, quantity and price are required"
+        message: "Provide an order, exactly one product ID, a valid quantity, price and currency."
       });
     }
 
@@ -30,28 +48,29 @@ exports.createOrderItem = async (req, res) => {
       });
     }
 
-    // Check gemstone exists
-    const [gemstone] = await db.query(
-      "SELECT id FROM gemstones WHERE id = ?",
-      [gemstone_id]
+    const [product] = await db.query(
+      `SELECT id FROM ${productTable} WHERE id = ?`,
+      [productId]
     );
 
-    if (gemstone.length === 0) {
+    if (product.length === 0) {
       return res.status(404).json({
         success: false,
-        message: "Gemstone not found"
+        message: hasJewellery ? "Jewellery item not found" : "Gemstone not found"
       });
     }
 
     const [result] = await db.query(
       `INSERT INTO order_items
-       (order_id, gemstone_id, quantity, price)
-       VALUES (?, ?, ?, ?)`,
+       (order_id, gemstone_id, jewellery_id, quantity, price, currency)
+       VALUES (?, ?, ?, ?, ?, ?)`,
       [
         order_id,
-        gemstone_id,
+        hasGemstone ? gemstone_id : null,
+        hasJewellery ? jewellery_id : null,
         quantity,
-        price
+        price,
+        currency.trim().toUpperCase()
       ]
     );
 
@@ -82,13 +101,26 @@ exports.getOrderItems = async (req, res) => {
         oi.id,
         oi.order_id,
         oi.gemstone_id,
-        g.gemstone_id AS gemstone_code,
-        g.name AS gemstone_name,
+        oi.jewellery_id,
+        CASE WHEN oi.jewellery_id IS NULL THEN 'gemstone' ELSE 'jewellery' END AS item_type,
+        COALESCE(g.gemstone_id, j.product_code) AS product_code,
+        COALESCE(g.name, j.product_name) AS name,
+        COALESCE(g.name, j.product_name) AS gemstone_name,
+        g.carat,
+        g.cut,
+        g.shape,
+        g.origin,
+        COALESCE(gi.image_url, j.image_url) AS image_url,
         oi.quantity,
         oi.price,
+        oi.currency,
         (oi.quantity * oi.price) AS subtotal
       FROM order_items oi
-      INNER JOIN gemstones g ON oi.gemstone_id = g.id
+      LEFT JOIN gemstones g ON oi.gemstone_id = g.id
+      LEFT JOIN jewellery j ON oi.jewellery_id = j.id
+      LEFT JOIN gemstone_images gi
+        ON gi.gemstone_id = g.id
+        AND gi.is_primary = 1
       WHERE oi.order_id = ?
       ORDER BY oi.id DESC`,
       [order_id]

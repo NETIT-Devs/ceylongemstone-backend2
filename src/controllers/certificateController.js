@@ -1,22 +1,8 @@
 const db = require("../config/db");
-const fs = require("fs/promises");
-const path = require("path");
-
-const certificateUploadDirectory = path.resolve(__dirname, "../../uploads/certificates");
-
-const getManagedCertificatePath = (certificateUrl) => {
-    if (typeof certificateUrl !== "string") {
-        return null;
-    }
-
-    const match = certificateUrl.match(/^\/uploads\/certificates\/([^/\\]+)$/);
-    if (!match) {
-        return null;
-    }
-
-    const filePath = path.resolve(certificateUploadDirectory, match[1]);
-    return path.dirname(filePath) === certificateUploadDirectory ? filePath : null;
-};
+const {
+    removeUploadedFile,
+    removeUploadedFileObjects
+} = require("../utils/uploadFileCleanup");
 
 const getUploadedCertificate = (req) =>
     req.file || req.files?.certificate?.[0] || req.files?.certificate_url?.[0] || null;
@@ -25,28 +11,20 @@ const removeUploadedCertificate = async (req) => {
     const files = req.file
         ? [req.file]
         : Object.values(req.files || {}).flat();
-    const results = await Promise.allSettled(files.map((file) => fs.unlink(file.path)));
-    results
-        .filter((result) => result.status === "rejected" && result.reason.code !== "ENOENT")
-        .forEach((result) => console.error("Certificate upload cleanup failed:", result.reason));
+    await removeUploadedFileObjects(files);
 };
 
 const removeReplacedCertificate = async (certificateUrl) => {
-    const filePath = getManagedCertificatePath(certificateUrl);
-    if (!filePath) return;
-
     try {
         const [references] = await db.query(
             "SELECT id FROM certificates WHERE certificate_url = ? LIMIT 1",
             [certificateUrl]
         );
         if (references.length === 0) {
-            await fs.unlink(filePath);
+            await removeUploadedFile(certificateUrl);
         }
     } catch (error) {
-        if (error.code !== "ENOENT") {
-            console.error("Replaced certificate file cleanup failed:", error);
-        }
+        console.error("Replaced certificate file cleanup failed:", error);
     }
 };
 
@@ -315,24 +293,6 @@ const deleteCertificate = async (req, res) => {
             });
         }
 
-        const certificatePath = getManagedCertificatePath(certificates[0].certificate_url);
-        if (certificatePath) {
-            const [references] = await db.query(
-                "SELECT id FROM certificates WHERE certificate_url = ? AND id <> ? LIMIT 1",
-                [certificates[0].certificate_url, id]
-            );
-
-            if (references.length === 0) {
-                try {
-                    await fs.unlink(certificatePath);
-                } catch (error) {
-                    if (error.code !== "ENOENT") {
-                        throw error;
-                    }
-                }
-            }
-        }
-
         const [result] = await db.query(
             "DELETE FROM certificates WHERE id = ?",
             [id]
@@ -344,6 +304,8 @@ const deleteCertificate = async (req, res) => {
                 message: "Certificate not found"
             });
         }
+
+        await removeReplacedCertificate(certificates[0].certificate_url);
 
         res.json({
             success: true,

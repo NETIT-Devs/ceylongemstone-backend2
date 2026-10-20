@@ -1,5 +1,8 @@
 const db = require("../config/db");
-const fs = require("fs");
+const {
+  removeUploadedFile,
+  removeUploadedFileObjects,
+} = require("../utils/uploadFileCleanup");
 
 const treatmentAliases = {
   unheated: ["unheated", "untreated", "natural"],
@@ -68,12 +71,23 @@ const validateOfferFields = (rate, startDate, endDate) => {
 
 const removeUploadedFiles = async (req) => {
   const files = Object.values(req.files || {}).flat();
-  const results = await Promise.allSettled(
-    files.map((file) => fs.promises.unlink(file.path))
-  );
-  results
-    .filter((result) => result.status === "rejected")
-    .forEach((result) => console.error("Uploaded media cleanup failed:", result.reason));
+  await removeUploadedFileObjects(files);
+};
+
+const removeUnreferencedGemstoneMedia = async (imageUrls) => {
+  for (const imageUrl of new Set(imageUrls.filter(Boolean))) {
+    try {
+      const [references] = await db.query(
+        "SELECT id FROM gemstone_images WHERE image_url = ? LIMIT 1",
+        [imageUrl]
+      );
+      if (references.length === 0) {
+        await removeUploadedFile(imageUrl);
+      }
+    } catch (error) {
+      console.error("Gemstone media reference check failed:", error);
+    }
+  }
 };
 
 const attachGemstoneMedia = async (gemstones) => {
@@ -606,6 +620,7 @@ exports.updateGemstone = async (req, res) => {
     ];
 
     const connection = await db.getConnection();
+    const replacedImageUrls = [];
     try {
       await connection.beginTransaction();
       await connection.query(query, values);
@@ -618,7 +633,7 @@ exports.updateGemstone = async (req, res) => {
           ? ["front", "main"]
           : [mediaField.type];
         const [existingMedia] = await connection.query(
-          `SELECT id FROM gemstone_images
+          `SELECT id, image_url FROM gemstone_images
            WHERE gemstone_id = ? AND image_type IN (${matchingTypes.map(() => "?").join(", ")})
            ORDER BY id ASC LIMIT 1`,
           [id, ...matchingTypes]
@@ -626,6 +641,7 @@ exports.updateGemstone = async (req, res) => {
         const imageUrl = `/uploads/gemstones/${file.filename}`;
 
         if (existingMedia.length) {
+          replacedImageUrls.push(existingMedia[0].image_url);
           await connection.query(
             `UPDATE gemstone_images
              SET image_url = ?, image_type = ?, is_primary = ?
@@ -650,6 +666,8 @@ exports.updateGemstone = async (req, res) => {
       connection.release();
     }
 
+    await removeUnreferencedGemstoneMedia(replacedImageUrls);
+
     return res.status(200).json({
       success: true,
       message: "Gemstone updated successfully",
@@ -667,22 +685,48 @@ exports.updateGemstone = async (req, res) => {
 
 // Delete gemstone
 exports.deleteGemstone = async (req, res) => {
+  let connection;
   try {
     const { id } = req.params;
-    const [result] = await db.query("DELETE FROM gemstones WHERE id = ?", [id]);
+    connection = await db.getConnection();
+    await connection.beginTransaction();
+    const [media] = await connection.query(
+      "SELECT image_url FROM gemstone_images WHERE gemstone_id = ?",
+      [id]
+    );
+    await connection.query(
+      "DELETE FROM gemstone_images WHERE gemstone_id = ?",
+      [id]
+    );
+    const [result] = await connection.query(
+      "DELETE FROM gemstones WHERE id = ?",
+      [id]
+    );
 
     if (result.affectedRows === 0) {
+      await connection.rollback();
+      connection.release();
+      connection = null;
       return res.status(404).json({
         success: false,
         message: "Gemstone not found",
       });
     }
 
+    await connection.commit();
+    connection.release();
+    connection = null;
+    await removeUnreferencedGemstoneMedia(media.map((item) => item.image_url));
+
     return res.status(200).json({
       success: true,
       message: "Gemstone deleted successfully",
     });
   } catch (error) {
+    if (connection) {
+      await connection.rollback();
+      connection.release();
+    }
     console.error("Delete Gemstone Error:", error);
     return res.status(500).json({
       success: false,

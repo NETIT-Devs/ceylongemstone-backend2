@@ -1,5 +1,14 @@
 const db = require("../config/db");
 
+const isValidDate = (value) => {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
+  }
+
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+};
+
 // Create Order
 exports.createOrder = async (req, res) => {
   try {
@@ -103,6 +112,37 @@ exports.createOrder = async (req, res) => {
 
 // Get All Orders
 exports.getOrders = async (req, res) => {
+  const { startDate, endDate } = req.query;
+
+  if ((startDate && !isValidDate(startDate)) || (endDate && !isValidDate(endDate))) {
+    return res.status(400).json({
+      success: false,
+      message: "startDate and endDate must be valid dates in YYYY-MM-DD format."
+    });
+  }
+
+  if (startDate && endDate && startDate > endDate) {
+    return res.status(400).json({
+      success: false,
+      message: "startDate must be on or before endDate."
+    });
+  }
+
+  const dateConditions = [];
+  const dateParams = [];
+
+  if (startDate) {
+    dateConditions.push("o.created_at >= ?");
+    dateParams.push(startDate);
+  }
+  if (endDate) {
+    dateConditions.push("o.created_at < DATE_ADD(?, INTERVAL 1 DAY)");
+    dateParams.push(endDate);
+  }
+  const dateFilter = dateConditions.length
+    ? `WHERE ${dateConditions.join(" AND ")}`
+    : "";
+
   try {
     const [orders] = await db.query(
       `SELECT
@@ -122,7 +162,9 @@ exports.getOrders = async (req, res) => {
       FROM orders o
       INNER JOIN users u
         ON o.user_id = u.id
-      ORDER BY o.created_at DESC`
+      ${dateFilter}
+      ORDER BY o.created_at DESC`,
+      dateParams
     );
 
     const itemsByOrderId = new Map();
@@ -133,14 +175,33 @@ exports.getOrders = async (req, res) => {
           oi.id,
           oi.order_id,
           oi.gemstone_id,
-          g.gemstone_id AS gemstone_code,
-          g.name AS gemstone_name,
+          oi.jewellery_id,
+          CASE WHEN oi.jewellery_id IS NULL THEN 'gemstone' ELSE 'jewellery' END AS item_type,
+          COALESCE(g.gemstone_id, j.product_code) AS product_code,
+          COALESCE(g.name, j.product_name) AS name,
+          COALESCE(g.name, j.product_name) AS gemstone_name,
+          g.carat,
+          g.cut,
+          g.shape,
+          g.origin,
+          j.material,
+          j.gemstone_type,
+          j.jewellery_type,
+          j.is_handcrafted,
+          COALESCE(gi.image_url, j.image_url) AS image_url,
           oi.quantity,
           oi.price,
+          oi.original_price,
+          oi.discount_rate,
           oi.currency
         FROM order_items oi
-        INNER JOIN gemstones g
+        LEFT JOIN gemstones g
           ON oi.gemstone_id = g.id
+        LEFT JOIN jewellery j
+          ON oi.jewellery_id = j.id
+        LEFT JOIN gemstone_images gi
+          ON gi.gemstone_id = g.id
+          AND gi.is_primary = 1
         WHERE oi.order_id IN (${placeholders})
         ORDER BY oi.id`,
         orders.map((order) => order.id)
@@ -364,6 +425,7 @@ exports.getUserOrders = async (req, res) => {
         COALESCE(o.total_amount, 0) + COALESCE(o.shipping_cost, 0) AS final_total,
         o.currency,
         o.shipping_address,
+        COALESCE(order_sm.shipping_method, shipment_sm.shipping_method) AS shipping_method,
         s.tracking_number,
         s.courier,
         s.estimated_delivery,
@@ -374,6 +436,10 @@ exports.getUserOrders = async (req, res) => {
       FROM orders o
       LEFT JOIN shipments s
         ON s.order_id = o.id
+      LEFT JOIN shipping_methods order_sm
+        ON order_sm.id = o.shipping_method_id
+      LEFT JOIN shipping_methods shipment_sm
+        ON shipment_sm.id = s.shipping_method_id
       WHERE o.user_id = ?
       ORDER BY o.created_at DESC`,
       [user_id]
@@ -387,12 +453,20 @@ exports.getUserOrders = async (req, res) => {
           oi.id,
           oi.order_id,
           oi.gemstone_id,
-          g.gemstone_id AS gemstone_code,
-          g.name AS gemstone_name,
+          oi.jewellery_id,
+          CASE WHEN oi.jewellery_id IS NULL THEN 'gemstone' ELSE 'jewellery' END AS item_type,
+          COALESCE(g.gemstone_id, j.product_code) AS product_code,
+          COALESCE(g.name, j.product_name) AS name,
+          COALESCE(g.name, j.product_name) AS gemstone_name,
           g.carat,
           g.cut,
           g.shape,
           g.origin,
+          j.material,
+          j.gemstone_type,
+          j.jewellery_type,
+          j.is_handcrafted,
+          COALESCE(gi.image_url, j.image_url) AS image_url,
           (
             SELECT c.certificate_number
             FROM certificates c
@@ -402,10 +476,17 @@ exports.getUserOrders = async (req, res) => {
           ) AS certificate_number,
           oi.quantity,
           oi.price,
+          oi.original_price,
+          oi.discount_rate,
           oi.currency
         FROM order_items oi
-        INNER JOIN gemstones g
+        LEFT JOIN gemstones g
           ON oi.gemstone_id = g.id
+        LEFT JOIN jewellery j
+          ON oi.jewellery_id = j.id
+        LEFT JOIN gemstone_images gi
+          ON gi.gemstone_id = g.id
+          AND gi.is_primary = 1
         WHERE oi.order_id IN (${placeholders})
         ORDER BY oi.id`,
         orders.map((order) => order.id)
