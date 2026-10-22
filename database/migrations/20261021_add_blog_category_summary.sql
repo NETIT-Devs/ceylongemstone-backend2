@@ -1,3 +1,0 @@
-ALTER TABLE blogs
-  ADD COLUMN category VARCHAR(255) NULL AFTER title,
-  ADD COLUMN summary TEXT NULL AFTER category;
