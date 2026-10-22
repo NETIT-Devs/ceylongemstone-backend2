@@ -1,60 +1,57 @@
 const db = require("../config/db");
+const { removeUploadedFileObjects } = require("../utils/uploadFileCleanup");
 
 // Create Blog
 const createBlog = async (req, res) => {
   try {
     const {
       title,
-      slug,
+      category,
+      summary,
       content,
-      image,
-      author_id,
-      status
     } = req.body;
+    const normalizedTitle = typeof title === "string" ? title.trim() : "";
+    const normalizedCategory = typeof category === "string" ? category.trim() : "";
+    const normalizedSummary = typeof summary === "string" ? summary.trim() : "";
+    const normalizedContent = typeof content === "string" ? content.trim() : "";
 
-    if (!title || !slug || !content) {
+    if (!normalizedTitle || !normalizedCategory || !normalizedSummary || !normalizedContent || !req.file) {
+      if (req.file) await removeUploadedFileObjects([req.file]);
       return res.status(400).json({
         success: false,
-        message: "title, slug and content are required"
+        message: "title, category, summary, content, and image are required"
       });
     }
 
-    const [existing] = await db.query(
-      "SELECT id FROM blogs WHERE slug = ?",
-      [slug]
-    );
-
-    if (existing.length > 0) {
-      return res.status(409).json({
-        success: false,
-        message: "Blog slug already exists"
-      });
-    }
+    const image = `/uploads/blogs/${req.file.filename}`;
 
     const [result] = await db.query(
       `INSERT INTO blogs
-      (title, slug, content, image, author_id, status)
-      VALUES (?, ?, ?, ?, ?, ?)`,
+      (title, category, summary, content, image, author_id, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
-        title,
-        slug,
-        content,
-        image || null,
-        author_id || null,
-        status !== undefined ? status : 0
+        normalizedTitle,
+        normalizedCategory,
+        normalizedSummary,
+        normalizedContent,
+        image,
+        req.user?.id || null,
+        1
       ]
     );
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: "Blog created successfully",
-      blog_id: result.insertId
+      blog_id: result.insertId,
+      image
     });
 
   } catch (error) {
+    if (req.file) await removeUploadedFileObjects([req.file]);
     console.error("Create Blog Error:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Failed to create blog",
       error: error.message

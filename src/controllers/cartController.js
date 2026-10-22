@@ -36,7 +36,7 @@ exports.addToCart = async (req, res) => {
 
     const table = itemType === "jewellery" ? "jewellery" : "gemstones";
     const [products] = await db.query(
-      `SELECT id, ${itemType === "jewellery" ? "product_name AS name, stock_quantity AS stock" : "name, stock"}
+      `SELECT id, ${itemType === "jewellery" ? "product_name AS name, stock_quantity" : "name, stock_quantity"}
        FROM ${table}
        WHERE id = ?`,
       [Number(itemId)]
@@ -50,19 +50,19 @@ exports.addToCart = async (req, res) => {
     }
 
     const product = products[0];
-    const availableStock = Number(product.stock);
-    if (!Number.isFinite(availableStock) || availableStock < 0) {
+    const availableStockQuantity = Number(product.stock_quantity);
+    if (!Number.isFinite(availableStockQuantity) || availableStockQuantity < 0) {
       return res.status(409).json({
         success: false,
         message: `Stock is unavailable for ${product.name}`
       });
     }
 
-    if (cartQuantity > availableStock) {
+    if (cartQuantity > availableStockQuantity) {
       return res.status(400).json({
         success: false,
         message: `Insufficient stock for ${product.name}`,
-        available_stock: availableStock,
+        available_stock_quantity: availableStockQuantity,
         requested_quantity: cartQuantity
       });
     }
@@ -79,11 +79,11 @@ exports.addToCart = async (req, res) => {
       const newQuantity = [true, 1, "1", "true"].includes(replace_quantity)
         ? cartQuantity
         : Number(existing[0].quantity) + cartQuantity;
-      if (newQuantity > availableStock) {
+      if (newQuantity > availableStockQuantity) {
         return res.status(400).json({
           success: false,
           message: `Insufficient stock for ${product.name}`,
-          available_stock: availableStock,
+          available_stock_quantity: availableStockQuantity,
           requested_quantity: newQuantity
         });
       }
@@ -198,7 +198,7 @@ exports.updateCart = async (req, res) => {
         c.gemstone_id,
         c.jewellery_id,
         COALESCE(g.name, j.product_name) AS name,
-        COALESCE(g.stock, j.stock_quantity) AS stock
+        COALESCE(g.stock_quantity, j.stock_quantity) AS stock_quantity
       FROM cart c
       LEFT JOIN gemstones g ON c.gemstone_id = g.id
       LEFT JOIN jewellery j ON c.jewellery_id = j.id
@@ -214,12 +214,12 @@ exports.updateCart = async (req, res) => {
     }
 
     const cartItem = cartItems[0];
-    const availableStock = Number(cartItem.stock);
-    if (requestedQuantity > availableStock) {
+    const availableStockQuantity = Number(cartItem.stock_quantity);
+    if (requestedQuantity > availableStockQuantity) {
       return res.status(400).json({
         success: false,
         message: `Insufficient stock for ${cartItem.name}`,
-        available_stock: availableStock,
+        available_stock_quantity: availableStockQuantity,
         requested_quantity: requestedQuantity
       });
     }

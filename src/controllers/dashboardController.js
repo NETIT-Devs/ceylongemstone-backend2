@@ -1,6 +1,9 @@
 const db = require("../config/db");
 
+// Set the maximum stock level that counts as low inventory.
 const LOW_STOCK_THRESHOLD = 3;
+
+// Accept only real calendar dates written as YYYY-MM-DD.
 const isValidDate = (value) => {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     return false;
@@ -11,8 +14,10 @@ const isValidDate = (value) => {
 };
 
 exports.getDashboardStats = async (req, res) => {
+  // Read the optional date range used to filter order statistics.
   const { startDate, endDate } = req.query;
 
+  // Reject malformed dates before building or running database queries.
   if ((startDate && !isValidDate(startDate)) || (endDate && !isValidDate(endDate))) {
     return res.status(400).json({
       success: false,
@@ -20,6 +25,7 @@ exports.getDashboardStats = async (req, res) => {
     });
   }
 
+  // Ensure the range starts on or before it ends.
   if (startDate && endDate && startDate > endDate) {
     return res.status(400).json({
       success: false,
@@ -30,6 +36,7 @@ exports.getDashboardStats = async (req, res) => {
   const dateConditions = [];
   const dateParams = [];
 
+  // Build parameterized inclusive date bounds for the order queries.
   if (startDate) {
     dateConditions.push("created_at >= ?");
     dateParams.push(startDate);
@@ -38,11 +45,14 @@ exports.getDashboardStats = async (req, res) => {
     dateConditions.push("created_at < DATE_ADD(?, INTERVAL 1 DAY)");
     dateParams.push(endDate);
   }
+
+  // Append date conditions only when at least one bound was provided.
   const dateFilter = dateConditions.length
     ? ` AND ${dateConditions.join(" AND ")}`
     : "";
 
   try {
+    // Fetch inventory, order, and shipment counts concurrently.
     const [[gemstoneCounts], [jewelleryCounts], [orderCounts], [shipmentCounts]] = await Promise.all([
       db.query(
         `SELECT COUNT(*) AS active_count
@@ -68,9 +78,11 @@ exports.getDashboardStats = async (req, res) => {
       )
     ]);
 
+    // Convert database count values to numbers and combine inventory totals.
     const activeGemstones = Number(gemstoneCounts[0]?.active_count || 0);
     const activeJewellery = Number(jewelleryCounts[0]?.active_count || 0);
 
+    // Return the dashboard totals in a consistent response shape.
     return res.status(200).json({
       success: true,
       data: {
@@ -82,6 +94,7 @@ exports.getDashboardStats = async (req, res) => {
       }
     });
   } catch (error) {
+    // Log database failures and report them to the client.
     console.error("Get Dashboard Stats Error:", error);
     return res.status(500).json({
       success: false,
@@ -93,6 +106,7 @@ exports.getDashboardStats = async (req, res) => {
 
 exports.getLowStockItems = async (req, res) => {
   try {
+    // Fetch low-stock gemstones and jewellery concurrently using the shared threshold.
     const [gemstones, jewellery] = await Promise.all([
       db.query(
         `SELECT
@@ -100,7 +114,7 @@ exports.getLowStockItems = async (req, res) => {
            g.id,
            g.gemstone_id AS item_code,
            g.name AS item_name,
-           g.stock AS quantity,
+           g.stock_quantity AS quantity,
            g.price,
            c.name AS category,
            (SELECT gi.image_url
@@ -110,7 +124,7 @@ exports.getLowStockItems = async (req, res) => {
             LIMIT 1) AS image_url
          FROM gemstones g
          LEFT JOIN categories c ON c.id = g.category_id
-         WHERE g.stock <= ?`,
+         WHERE g.stock_quantity <= ?`,
         [LOW_STOCK_THRESHOLD]
       ),
       db.query(
@@ -129,9 +143,11 @@ exports.getLowStockItems = async (req, res) => {
       )
     ]);
 
+    // Combine both item types and sort them from lowest stock to highest.
     const items = [...gemstones[0], ...jewellery[0]]
       .sort((a, b) => Number(a.quantity) - Number(b.quantity));
 
+    // Return the items together with the threshold and result count.
     return res.status(200).json({
       success: true,
       threshold: LOW_STOCK_THRESHOLD,
@@ -139,6 +155,7 @@ exports.getLowStockItems = async (req, res) => {
       data: items
     });
   } catch (error) {
+    // Log database failures and report them to the client.
     console.error("Get Low Stock Items Error:", error);
     return res.status(500).json({
       success: false,
@@ -149,20 +166,24 @@ exports.getLowStockItems = async (req, res) => {
 };
 
 exports.addStock = async (req, res) => {
+  // Read the item type and ID from the route and normalize the quantity.
   const { type, id } = req.params;
   const quantity = Number(req.body?.quantity);
   const itemId = Number(id);
   const inventory = {
-    gemstone: { table: "gemstones", stockColumn: "stock" },
+    gemstone: { table: "gemstones", stockColumn: "stock_quantity" },
     jewellery: { table: "jewellery", stockColumn: "stock_quantity" }
   }[type];
 
+  // Allow only supported item types and positive, safe integer IDs.
   if (!inventory || !Number.isSafeInteger(itemId) || itemId < 1) {
     return res.status(400).json({
       success: false,
       message: "A valid inventory item type and ID are required."
     });
   }
+
+  // Require a positive whole number for the quantity being added.
   if (!Number.isSafeInteger(quantity) || quantity < 1) {
     return res.status(400).json({
       success: false,
@@ -171,6 +192,7 @@ exports.addStock = async (req, res) => {
   }
 
   try {
+    // Add the requested quantity to the matching inventory record.
     const [result] = await db.query(
       `UPDATE ${inventory.table}
        SET ${inventory.stockColumn} = ${inventory.stockColumn} + ?
@@ -178,6 +200,7 @@ exports.addStock = async (req, res) => {
       [quantity, itemId]
     );
 
+    // Return 404 when the requested inventory record does not exist.
     if (result.affectedRows === 0) {
       return res.status(404).json({
         success: false,
@@ -185,6 +208,7 @@ exports.addStock = async (req, res) => {
       });
     }
 
+    // Read the updated stock value to include it in the response.
     const [[item]] = await db.query(
       `SELECT ${inventory.stockColumn} AS quantity
        FROM ${inventory.table}
@@ -192,12 +216,14 @@ exports.addStock = async (req, res) => {
       [itemId]
     );
 
+    // Return the item identifier, type, and updated quantity.
     return res.status(200).json({
       success: true,
       message: "Inventory stock updated successfully.",
       data: { item_type: type, id: itemId, quantity: Number(item.quantity) }
     });
   } catch (error) {
+    // Log database failures and report them to the client.
     console.error("Add Inventory Stock Error:", error);
     return res.status(500).json({
       success: false,

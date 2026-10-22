@@ -361,7 +361,7 @@ const verifyCertificate = async (req, res) => {
                 g.origin,
                 g.treatment_status,
                 g.price,
-                g.stock,
+                g.stock_quantity,
                 g.description,
                 g.status AS gemstone_status,
                 category.name AS category_name,
@@ -420,7 +420,7 @@ const verifyCertificate = async (req, res) => {
                 origin: row.origin,
                 treatment_status: row.treatment_status,
                 price: row.price,
-                stock: row.stock,
+                stock_quantity: row.stock_quantity,
                 description: row.description,
                 status: row.gemstone_status,
                 image: row.gemstone_image

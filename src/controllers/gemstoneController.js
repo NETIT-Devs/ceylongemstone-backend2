@@ -4,6 +4,7 @@ const {
   removeUploadedFileObjects,
 } = require("../utils/uploadFileCleanup");
 
+// Map supported treatment filters to the spellings stored in the database.
 const treatmentAliases = {
   unheated: ["unheated", "untreated", "natural"],
   heated: ["heated"],
@@ -16,9 +17,15 @@ const treatmentAliases = {
   "beryllium treated": ["beryllium treated", "beryllium treatment", "beryllium"],
 };
 
+// Standardize treatment text so spacing and letter case do not affect matching.
 const normalizeTreatment = (value) =>
   String(value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 
+// Derive the public stock label from the numeric stock quantity.
+const getStockStatusLabel = (stockQuantity) =>
+  Number(stockQuantity) > 0 ? "ACTIVE" : "OUT OF STOCK";
+
+// Format database date values consistently as YYYY-MM-DD.
 const formatDatabaseDate = (value) => {
   if (value instanceof Date) {
     const year = value.getFullYear();
@@ -29,6 +36,7 @@ const formatDatabaseDate = (value) => {
   return typeof value === "string" ? value.slice(0, 10) : value ?? null;
 };
 
+// Connect each accepted upload field to its database media type.
 const mediaFields = [
   { field: "mainImage", type: "front", primary: true },
   { field: "backViewImage", type: "back" },
@@ -39,23 +47,28 @@ const mediaFields = [
   { field: "videoClip", type: "video" },
 ];
 
+// Validate a calendar date and require the YYYY-MM-DD format.
 const isValidSqlDate = (value) => {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const date = new Date(`${value}T00:00:00.000Z`);
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
 };
 
+// Validate offer rate and date fields before saving them.
 const validateOfferFields = (rate, startDate, endDate) => {
+  // Normalize optional offer values so blank inputs behave like missing values.
   const parsedRate = rate === undefined || rate === null || rate === "" ? null : Number(rate);
   const normalizedStart = startDate || null;
   const normalizedEnd = endDate || null;
 
+  // Restrict any supplied offer rate to the supported percentage range.
   if (parsedRate !== null && (!Number.isFinite(parsedRate) || parsedRate < 1 || parsedRate > 100)) {
     return "Offer rate must be between 1 and 100.";
   }
   if (parsedRate !== null && (!normalizedStart || !normalizedEnd)) {
     return "Both offer start and end dates are required when an offer rate is set.";
   }
+  // Reject invalid calendar dates and date ranges in the wrong order.
   if (
     (normalizedStart && !isValidSqlDate(normalizedStart)) ||
     (normalizedEnd && !isValidSqlDate(normalizedEnd))
@@ -69,11 +82,13 @@ const validateOfferFields = (rate, startDate, endDate) => {
   return null;
 };
 
+// Remove all files uploaded for a request that did not complete successfully.
 const removeUploadedFiles = async (req) => {
   const files = Object.values(req.files || {}).flat();
   await removeUploadedFileObjects(files);
 };
 
+// Delete replaced media only when no gemstone still references its URL.
 const removeUnreferencedGemstoneMedia = async (imageUrls) => {
   for (const imageUrl of new Set(imageUrls.filter(Boolean))) {
     try {
@@ -90,9 +105,12 @@ const removeUnreferencedGemstoneMedia = async (imageUrls) => {
   }
 };
 
+// Load media for a set of gemstones and attach normalized gallery fields.
 const attachGemstoneMedia = async (gemstones) => {
+  // Avoid issuing a media query when there are no gemstones to enrich.
   if (!gemstones.length) return gemstones;
 
+  // Fetch all gallery records in one query to avoid a query per gemstone.
   const ids = gemstones.map((gemstone) => gemstone.id);
   const placeholders = ids.map(() => "?").join(", ");
   const [mediaRows] = await db.query(
@@ -104,12 +122,14 @@ const attachGemstoneMedia = async (gemstones) => {
   );
   const mediaByGemstone = new Map();
 
+  // Group media records by their owning gemstone.
   for (const media of mediaRows) {
     const items = mediaByGemstone.get(media.gemstone_id) || [];
     items.push(media);
     mediaByGemstone.set(media.gemstone_id, items);
   }
 
+  // Add image, gallery, video, and offer fields to each gemstone result.
   return gemstones.map((gemstone) => {
     const media = mediaByGemstone.get(gemstone.id) || [];
     const imageFor = (type) =>
@@ -179,6 +199,7 @@ const attachGemstoneMedia = async (gemstones) => {
 // Create Gemstone
 exports.createGemstone = async (req, res) => {
   try {
+    // Read gemstone details and offer fields from the submitted request.
     const {
       gemstone_id,
       category_id,
@@ -194,14 +215,14 @@ exports.createGemstone = async (req, res) => {
       origin,
       treatment_status,
       price,
-      stock,
+      stock_quantity,
       description,
-      status,
       offer_rate,
       offer_start_date,
       offer_end_date,
     } = req.body;
 
+    // Require the fields needed to identify and categorize a gemstone.
     if (!name || !category_id) {
       await removeUploadedFiles(req);
       return res.status(400).json({
@@ -209,6 +230,18 @@ exports.createGemstone = async (req, res) => {
         message: "Gemstone name and category_id are required",
       });
     }
+
+    // Normalize and validate stock before deriving its active status.
+    const stockQuantity = stock_quantity === undefined ? 1 : Number(stock_quantity);
+    if (!Number.isSafeInteger(stockQuantity)) {
+      await removeUploadedFiles(req);
+      return res.status(400).json({
+        success: false,
+        message: "Stock must be a whole number.",
+      });
+    }
+
+    // Validate the offer fields before writing anything to the database.
     const offerValidationError = validateOfferFields(
       offer_rate,
       offer_start_date,
@@ -219,7 +252,7 @@ exports.createGemstone = async (req, res) => {
       return res.status(400).json({ success: false, message: offerValidationError });
     }
 
-    // Verify category exists
+    // Confirm that the requested category exists.
     const [categories] = await db.query("SELECT id FROM categories WHERE id = ?", [category_id]);
     if (!categories || categories.length === 0) {
       await removeUploadedFiles(req);
@@ -228,26 +261,19 @@ exports.createGemstone = async (req, res) => {
         message: `Category with ID ${category_id} does not exist. Please create or specify a valid category.`,
       });
     }
-
-    // Auto-generate gemstone_id if not provided
+    // Use a generated identifier when the request does not provide one.
+    // Use a generated identifier when the request does not provide one.
     const gemId = gemstone_id || `GEM-${Date.now()}`;
 
-    // Convert status to tinyint(1) (1 for available/active, 0 otherwise)
-    const statusVal =
-      status === undefined ||
-      status === 1 ||
-      status === true ||
-      status === "available" ||
-      status === "active"
-        ? 1
-        : 0;
+    // Determine availability and approval state from stock and user role.
+    const statusVal = stockQuantity > 0 ? 1 : 0;
 
     const resolvedApprovalStatus = req.user.role === "ADMIN"
       ? "pending"
       : "approved";
     const query = `
       INSERT INTO gemstones 
-      (gemstone_id, category_id, name, color, carat, length, width, height, clarity, cut, shape, origin, treatment_status, price, stock, description, status, approval_status, offer_rate, offer_start_date, offer_end_date)
+      (gemstone_id, category_id, name, color, carat, length, width, height, clarity, cut, shape, origin, treatment_status, price, stock_quantity, description, status, approval_status, offer_rate, offer_start_date, offer_end_date)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
@@ -266,7 +292,7 @@ exports.createGemstone = async (req, res) => {
       origin || null,
       treatment_status || null,
       price ? parseFloat(price) : null,
-      stock !== undefined ? parseInt(stock, 10) : 1,
+      stockQuantity,
       description || null,
       statusVal,
       resolvedApprovalStatus,
@@ -275,12 +301,14 @@ exports.createGemstone = async (req, res) => {
       offer_end_date || null,
     ];
 
+    // Insert the gemstone and uploaded media atomically in one transaction.
     const connection = await db.getConnection();
     let result;
     try {
       await connection.beginTransaction();
       [result] = await connection.query(query, values);
 
+      // Save each uploaded image or video with its corresponding media type.
       for (const mediaField of mediaFields) {
         const file = req.files?.[mediaField.field]?.[0];
         if (!file) continue;
@@ -306,13 +334,18 @@ exports.createGemstone = async (req, res) => {
       connection.release();
     }
 
+    // Return the new gemstone identifiers and normalized stock status.
     return res.status(201).json({
       success: true,
       message: "Gemstone successfully added!",
       id: result.insertId,
       gemstone_id: gemId,
+      stock_quantity: stockQuantity,
+      status: statusVal,
+      status_label: getStockStatusLabel(stockQuantity),
     });
   } catch (error) {
+    // Clean up uploaded files when creation fails and report the database error.
     await removeUploadedFiles(req);
     console.error("Create Gemstone Error:", error);
     if (error.code === "ER_DUP_ENTRY") {
@@ -331,6 +364,7 @@ exports.createGemstone = async (req, res) => {
 
 exports.getPendingGemstones = async (req, res) => {
   try {
+    // Fetch pending submissions with their category names.
     const [rows] = await db.query(
       `SELECT g.*, c.name AS category_name
        FROM gemstones g
@@ -338,14 +372,23 @@ exports.getPendingGemstones = async (req, res) => {
        WHERE g.approval_status = 'pending'
        ORDER BY g.id DESC`
     );
-    const gemstonesWithMedia = await attachGemstoneMedia(rows);
 
+    // Attach media and normalize stock fields for the response.
+    const gemstonesWithMedia = await attachGemstoneMedia(rows);
+    const data = gemstonesWithMedia.map((gemstone) => ({
+      ...gemstone,
+      stock_quantity: Number(gemstone.stock_quantity),
+      status_label: getStockStatusLabel(gemstone.stock_quantity),
+    }));
+
+    // Return the pending gemstones and the number of results.
     return res.status(200).json({
       success: true,
-      count: gemstonesWithMedia.length,
-      data: gemstonesWithMedia
+      count: data.length,
+      data
     });
   } catch (error) {
+    // Log query failures and return an explicit server error.
     console.error("Fetch Pending Gemstones Error:", error);
     return res.status(500).json({
       success: false,
@@ -356,9 +399,11 @@ exports.getPendingGemstones = async (req, res) => {
 };
 
 exports.updateGemstoneApproval = async (req, res) => {
+  // Read the target gemstone and requested approval decision.
   const { id } = req.params;
   const { approval_status } = req.body;
 
+  // Accept only the supported approval outcomes.
   if (!["approved", "rejected"].includes(approval_status)) {
     return res.status(400).json({
       success: false,
@@ -367,14 +412,15 @@ exports.updateGemstoneApproval = async (req, res) => {
   }
 
   try {
+    // Update only submissions that are still pending.
     const [result] = await db.query(
       `UPDATE gemstones
-       SET approval_status = ?,
-           status = CASE WHEN ? = 'approved' THEN 1 ELSE 0 END
-       WHERE id = ? AND approval_status = 'pending'`,
-      [approval_status, approval_status, id]
+      SET approval_status = ?
+      WHERE id = ? AND approval_status = 'pending'`,
+      [approval_status, id]
     );
 
+    // Distinguish a missing gemstone from one already reviewed.
     if (result.affectedRows === 0) {
       const [rows] = await db.query(
         "SELECT id FROM gemstones WHERE id = ?",
@@ -388,12 +434,14 @@ exports.updateGemstoneApproval = async (req, res) => {
       });
     }
 
+    // Return the updated approval decision.
     return res.status(200).json({
       success: true,
       message: `Gemstone ${approval_status} successfully.`,
       data: { id: Number(id), approval_status }
     });
   } catch (error) {
+    // Log database failures and report them to the client.
     console.error("Update Gemstone Approval Error:", error);
     return res.status(500).json({
       success: false,
@@ -406,10 +454,12 @@ exports.updateGemstoneApproval = async (req, res) => {
 // Get all gemstones (with category names)
 exports.getAllGemstones = async (req, res) => {
   try {
+    // Support either query parameter name for the treatment filter.
     const treatment = req.query.treatment ?? req.query.treatment_status;
     let treatmentFilter = "";
     let queryValues = [];
 
+    // Validate the filter and expand it to accepted database aliases.
     if (treatment !== undefined) {
       if (typeof treatment !== "string") {
         return res.status(400).json({
@@ -430,6 +480,7 @@ exports.getAllGemstones = async (req, res) => {
       queryValues = aliases;
     }
 
+    // Fetch matching gemstones, then enrich and normalize their response data.
     const query = `
       SELECT g.*, c.name AS category_name 
       FROM gemstones g 
@@ -441,14 +492,17 @@ exports.getAllGemstones = async (req, res) => {
     const gemstonesWithMedia = await attachGemstoneMedia(rows);
     const data = gemstonesWithMedia.map((gemstone) => ({
       ...gemstone,
-      stock: Number(gemstone.stock),
+      stock_quantity: Number(gemstone.stock_quantity),
+      status_label: getStockStatusLabel(gemstone.stock_quantity),
     }));
 
+    // Return the complete gemstone collection.
     return res.status(200).json({
       success: true,
       data,
     });
   } catch (error) {
+    // Log query failures and return an explicit server error.
     console.error("Fetch Gemstones Error:", error);
     return res.status(500).json({
       success: false,
@@ -461,8 +515,10 @@ exports.getAllGemstones = async (req, res) => {
 // Get single gemstone by id or gemstone_id with certificate
 exports.getGemstoneById = async (req, res) => {
   try {
+    // Read the ID, which may be either a database ID or public gemstone ID.
     const { id } = req.params;
 
+    // Fetch the gemstone, category, and its most recently created certificate.
     const query = `
       SELECT 
         g.*,
@@ -488,6 +544,7 @@ exports.getGemstoneById = async (req, res) => {
 
     const [rows] = await db.query(query, [id, id]);
 
+    // Return 404 when neither identifier matches a gemstone.
     if (!rows || rows.length === 0) {
       return res.status(404).json({
         success: false,
@@ -495,14 +552,22 @@ exports.getGemstoneById = async (req, res) => {
       });
     }
 
+    // Attach gallery media and normalize stock fields for the response.
     const [gemstoneWithMedia] = await attachGemstoneMedia([rows[0]]);
+    const data = {
+      ...gemstoneWithMedia,
+      stock_quantity: Number(gemstoneWithMedia.stock_quantity),
+      status_label: getStockStatusLabel(gemstoneWithMedia.stock_quantity),
+    };
 
+    // Return the enriched gemstone record.
     return res.status(200).json({
       success: true,
-      data: gemstoneWithMedia,
+      data,
     });
 
   } catch (error) {
+    // Log query failures and return an explicit server error.
     console.error("Fetch Gemstone Error:", error);
 
     return res.status(500).json({
@@ -516,6 +581,7 @@ exports.getGemstoneById = async (req, res) => {
 // Update gemstone
 exports.updateGemstone = async (req, res) => {
   try {
+    // Read the target ID and any gemstone fields supplied for update.
     const { id } = req.params;
     const {
       name,
@@ -531,14 +597,14 @@ exports.updateGemstone = async (req, res) => {
       origin,
       treatment_status,
       price,
-      stock,
+      stock_quantity,
       description,
-      status,
       offer_rate,
       offer_start_date,
       offer_end_date,
     } = req.body;
 
+    // Load the existing record so omitted fields can retain their current values.
     const [existing] = await db.query("SELECT * FROM gemstones WHERE id = ?", [id]);
     if (!existing || existing.length === 0) {
       await removeUploadedFiles(req);
@@ -549,6 +615,19 @@ exports.updateGemstone = async (req, res) => {
     }
 
     const current = existing[0];
+    // Preserve existing stock when omitted and validate the resulting quantity.
+    const stockQuantity = stock_quantity === undefined
+      ? Number(current.stock_quantity)
+      : Number(stock_quantity);
+    if (!Number.isSafeInteger(stockQuantity)) {
+      await removeUploadedFiles(req);
+      return res.status(400).json({
+        success: false,
+        message: "Stock must be a whole number.",
+      });
+    }
+
+    // Merge supplied offer values with stored values before validating the offer.
     const updatedOfferRate = offer_rate !== undefined
       ? (offer_rate === "" || offer_rate === null ? null : offer_rate)
       : current.offer_rate;
@@ -568,10 +647,10 @@ exports.updateGemstone = async (req, res) => {
       return res.status(400).json({ success: false, message: offerValidationError });
     }
 
-    const statusVal = status !== undefined
-      ? (status === 1 || status === true || status === "available" || status === "active" ? 1 : 0)
-      : current.status;
+    // Keep the active status aligned with the updated stock quantity.
+    const statusVal = stockQuantity > 0 ? 1 : 0;
 
+    // Update gemstone fields while preserving values omitted from the request.
     const query = `
       UPDATE gemstones SET
         name = ?,
@@ -587,7 +666,7 @@ exports.updateGemstone = async (req, res) => {
         origin = ?,
         treatment_status = ?,
         price = ?,
-        stock = ?,
+        stock_quantity = ?,
         description = ?,
         status = ?,
         offer_rate = ?,
@@ -610,7 +689,7 @@ exports.updateGemstone = async (req, res) => {
       origin !== undefined ? origin : current.origin,
       treatment_status !== undefined ? treatment_status : current.treatment_status,
       price !== undefined ? price : current.price,
-      stock !== undefined ? stock : current.stock,
+      stockQuantity,
       description !== undefined ? description : current.description,
       statusVal,
       updatedOfferRate,
@@ -619,12 +698,14 @@ exports.updateGemstone = async (req, res) => {
       id,
     ];
 
+    // Update the record and replace supplied media within one transaction.
     const connection = await db.getConnection();
     const replacedImageUrls = [];
     try {
       await connection.beginTransaction();
       await connection.query(query, values);
 
+      // Replace matching media records or insert new ones when none exist.
       for (const mediaField of mediaFields) {
         const file = req.files?.[mediaField.field]?.[0];
         if (!file) continue;
@@ -666,13 +747,19 @@ exports.updateGemstone = async (req, res) => {
       connection.release();
     }
 
+    // Remove old media files only after the database transaction has committed.
     await removeUnreferencedGemstoneMedia(replacedImageUrls);
 
+    // Return the updated stock and availability status.
     return res.status(200).json({
       success: true,
       message: "Gemstone updated successfully",
+      stock_quantity: stockQuantity,
+      status: statusVal,
+      status_label: getStockStatusLabel(stockQuantity),
     });
   } catch (error) {
+    // Clean up new uploads if the update fails and report the error.
     await removeUploadedFiles(req);
     console.error("Update Gemstone Error:", error);
     return res.status(500).json({
@@ -687,6 +774,7 @@ exports.updateGemstone = async (req, res) => {
 exports.deleteGemstone = async (req, res) => {
   let connection;
   try {
+    // Start a transaction so gemstone and media records are deleted together.
     const { id } = req.params;
     connection = await db.getConnection();
     await connection.beginTransaction();
@@ -694,6 +782,8 @@ exports.deleteGemstone = async (req, res) => {
       "SELECT image_url FROM gemstone_images WHERE gemstone_id = ?",
       [id]
     );
+
+    // Delete media references before deleting the gemstone record.
     await connection.query(
       "DELETE FROM gemstone_images WHERE gemstone_id = ?",
       [id]
@@ -703,6 +793,7 @@ exports.deleteGemstone = async (req, res) => {
       [id]
     );
 
+    // Roll back and return 404 if no gemstone matched the requested ID.
     if (result.affectedRows === 0) {
       await connection.rollback();
       connection.release();
@@ -713,16 +804,19 @@ exports.deleteGemstone = async (req, res) => {
       });
     }
 
+    // Commit the deletion, release the connection, then clean up unreferenced files.
     await connection.commit();
     connection.release();
     connection = null;
     await removeUnreferencedGemstoneMedia(media.map((item) => item.image_url));
 
+    // Confirm that the gemstone was deleted.
     return res.status(200).json({
       success: true,
       message: "Gemstone deleted successfully",
     });
   } catch (error) {
+    // Roll back any incomplete deletion and release the database connection.
     if (connection) {
       await connection.rollback();
       connection.release();
@@ -739,26 +833,28 @@ exports.deleteGemstone = async (req, res) => {
 // Get Low Stock Gemstones
 exports.getLowStockGemstones = async (req, res) => {
   try {
-    // Default low stock threshold
+    // Use the stock level that defines a low-stock gemstone.
     const threshold = 3;
 
+    // Fetch gemstones at or below the threshold, ordered by available stock.
     const [rows] = await db.query(
       `SELECT
         g.id,
         g.gemstone_id,
         g.name,
-        g.stock,
+        g.stock_quantity,
         g.price,
         g.status,
         c.name AS category_name
       FROM gemstones g
       LEFT JOIN categories c
         ON g.category_id = c.id
-      WHERE g.stock <= ?
-      ORDER BY g.stock ASC`,
+      WHERE g.stock_quantity <= ?
+      ORDER BY g.stock_quantity ASC`,
       [threshold]
     );
 
+    // Return the threshold, result count, and matching gemstones.
     return res.status(200).json({
       success: true,
       message: "Low stock gemstones fetched successfully",
@@ -768,6 +864,7 @@ exports.getLowStockGemstones = async (req, res) => {
     });
 
   } catch (error) {
+    // Log query failures and return an explicit server error.
     console.error("Get Low Stock Gemstones Error:", error);
 
     return res.status(500).json({

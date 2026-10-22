@@ -11,9 +11,11 @@ const {
 } = require("../controllers/blogController");
 
 const router = express.Router();
+const uploadBlogImage = require("../middleware/blogUpload");
+const { verifyToken, requireAdmin } = require("../middleware/authMiddleware");
 
 // Create Blog
-router.post("/", createBlog);
+router.post("/", verifyToken, requireAdmin, uploadBlogImage.single("image"), createBlog);
 
 // Get All Blogs
 router.get("/", getBlogs);

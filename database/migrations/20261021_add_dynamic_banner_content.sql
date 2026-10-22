@@ -1,0 +1,4 @@
+ALTER TABLE banners
+  ADD COLUMN badge VARCHAR(255) NULL AFTER title,
+  ADD COLUMN subtitle TEXT NULL AFTER badge,
+  ADD COLUMN button_text VARCHAR(255) NULL AFTER subtitle;

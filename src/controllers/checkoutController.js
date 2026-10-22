@@ -1,15 +1,20 @@
 const db = require("../config/db");
 
+// List currencies accepted by checkout and price conversion.
 const supportedCurrencies = ["USD", "LKR", "EUR", "GBP", "AUD", "CAD"];
 
+// Convert an amount between currencies and round it to two decimal places.
 const convertCurrency = async (amount, from, to) => {
+  // Avoid a network request when the amount is already in the requested currency.
   if (from === to) return Number(Number(amount).toFixed(2));
 
+  // Request the latest exchange rate from the currency conversion service.
   const response = await fetch(
     `https://api.frankfurter.dev/v2/rate/${from}/${to}`
   );
   const data = await response.json();
 
+  // Surface conversion failures instead of silently using an invalid rate.
   if (!response.ok || !data.rate) {
     throw new Error(`Unable to convert ${from} to ${to}.`);
   }
@@ -17,7 +22,9 @@ const convertCurrency = async (amount, from, to) => {
   return Number((Number(amount) * Number(data.rate)).toFixed(2));
 };
 
+// Validate and normalize an optional list of products supplied by the client.
 const getRequestedItems = (items) => {
+  // Require a non-empty list with a bounded number of items.
   if (!Array.isArray(items) || items.length === 0 || items.length > 100) {
     return null;
   }
@@ -25,6 +32,7 @@ const getRequestedItems = (items) => {
   const normalizedItems = [];
   const seenItems = new Set();
 
+  // Validate each product type, ID, and quantity, and reject duplicates.
   for (const item of items) {
     const itemType = item?.item_type;
     const productId = Number(item?.product_id);
@@ -49,22 +57,26 @@ const getRequestedItems = (items) => {
   return normalizedItems;
 };
 
+// Fetch an available product and lock its row while checkout is in progress.
 const fetchProduct = async (connection, item) => {
+  // Select table and column names based on the requested inventory type.
   const isJewellery = item.itemType === "jewellery";
   const table = isJewellery ? "jewellery" : "gemstones";
   const nameColumn = isJewellery ? "product_name" : "name";
-  const stockColumn = isJewellery ? "stock_quantity" : "stock";
+  const stockColumn = "stock_quantity";
   const currencyColumn = isJewellery ? "currency" : "'USD'";
   const availabilityCondition = isJewellery
-    ? "LOWER(status) IN ('active', 'approved')"
+    ? "LOWER(status) IN ('active', 'approved', 'out_of_stock')"
     : "status = 1 AND approval_status = 'approved'";
+
+  // Load the product details needed to price and fulfill this order item.
   const [rows] = await connection.query(
     `SELECT
        id,
        ${nameColumn} AS name,
        price,
        ${currencyColumn} AS currency,
-       ${stockColumn} AS stock,
+       ${stockColumn} AS stock_quantity,
        offer_rate,
        DATE_FORMAT(offer_start_date, '%Y-%m-%d') AS offer_start_date,
        DATE_FORMAT(offer_end_date, '%Y-%m-%d') AS offer_end_date,
@@ -83,6 +95,7 @@ const fetchProduct = async (connection, item) => {
 };
 
 exports.checkout = async (req, res) => {
+  // Read and normalize checkout details from the request and authenticated user.
   const { currency, shipping_address, shipping_method_id } = req.body;
   const userId = req.user?.id;
   const selectedCurrency =
@@ -90,6 +103,7 @@ exports.checkout = async (req, res) => {
   const shippingAddress =
     typeof shipping_address === "string" ? shipping_address.trim() : "";
 
+  // Require an authenticated user, supported currency input, and shipping address.
   if (!userId || !selectedCurrency || !shippingAddress) {
     return res.status(400).json({
       success: false,
@@ -97,6 +111,7 @@ exports.checkout = async (req, res) => {
     });
   }
 
+  // Reject currencies that checkout and conversion do not support.
   if (!supportedCurrencies.includes(selectedCurrency)) {
     return res.status(400).json({
       success: false,
@@ -105,6 +120,7 @@ exports.checkout = async (req, res) => {
     });
   }
 
+  // Validate client-supplied items when present; otherwise use the user's cart.
   const requestedItems = req.body.items === undefined
     ? null
     : getRequestedItems(req.body.items);
@@ -115,6 +131,7 @@ exports.checkout = async (req, res) => {
     });
   }
 
+  // Normalize and validate an optional shipping method identifier.
   const shippingMethodId = shipping_method_id === undefined || shipping_method_id === null
     ? null
     : Number(shipping_method_id);
@@ -131,10 +148,12 @@ exports.checkout = async (req, res) => {
   let connection;
   let transactionStarted = false;
   try {
+    // Start a transaction so order creation and stock changes succeed together.
     connection = await db.getConnection();
     await connection.beginTransaction();
     transactionStarted = true;
 
+    // Confirm the authenticated user still exists before processing the order.
     const [users] = await connection.query(
       "SELECT id FROM users WHERE id = ?",
       [userId]
@@ -145,6 +164,7 @@ exports.checkout = async (req, res) => {
       return res.status(404).json({ success: false, message: "User not found" });
     }
 
+    // Lock and load the user's cart when no item list was supplied directly.
     let requestedCartItems = requestedItems;
     if (!requestedCartItems) {
       const [cartItems] = await connection.query(
@@ -161,12 +181,14 @@ exports.checkout = async (req, res) => {
       }));
     }
 
+    // Reject checkout when there are no products to purchase.
     if (requestedCartItems.length === 0) {
       await connection.rollback();
       transactionStarted = false;
       return res.status(400).json({ success: false, message: "Cart is empty" });
     }
 
+    // Validate cart IDs and quantities, including items loaded from the database.
     if (
       requestedCartItems.some((item) =>
         !Number.isSafeInteger(item.productId) ||
@@ -183,9 +205,11 @@ exports.checkout = async (req, res) => {
       });
     }
 
+    // Load, price, and check stock for each requested product.
     const items = [];
     for (const requestedItem of requestedCartItems) {
       const product = await fetchProduct(connection, requestedItem);
+      // Stop checkout if a requested product is missing or unavailable.
       if (!product) {
         await connection.rollback();
         transactionStarted = false;
@@ -195,18 +219,20 @@ exports.checkout = async (req, res) => {
         });
       }
 
-      const availableStock = Number(product.stock);
-      if (availableStock < requestedItem.quantity) {
+      const availableStockQuantity = Number(product.stock_quantity);
+      // Ensure enough inventory is available before creating the order.
+      if (availableStockQuantity < requestedItem.quantity) {
         await connection.rollback();
         transactionStarted = false;
         return res.status(409).json({
           success: false,
           message: `Insufficient stock for ${product.name}.`,
-          available_stock: availableStock,
+          available_stock_quantity: availableStockQuantity,
           requested_quantity: requestedItem.quantity
         });
       }
 
+      // Apply an offer only when its rate and optional date range are valid today.
       let unitPrice = Number(product.price);
       const offerRate = Number(product.offer_rate);
       let activeDiscountRate = 0;
@@ -228,6 +254,7 @@ exports.checkout = async (req, res) => {
         unitPrice *= 1 - offerRate / 100;
       }
 
+      // Validate the product price and its source currency before conversion.
       const sourceCurrency = String(product.currency || "USD").toUpperCase();
       if (!Number.isFinite(unitPrice) || unitPrice < 0) {
         await connection.rollback();
@@ -246,6 +273,7 @@ exports.checkout = async (req, res) => {
         });
       }
 
+      // Convert current and original prices and collect item details for the order.
       items.push({
         ...requestedItem,
         name: product.name,
@@ -265,8 +293,10 @@ exports.checkout = async (req, res) => {
       });
     }
 
+    // Use the selected shipping method when provided; otherwise use the request cost.
     let shippingCost = Number(req.body.shipping_cost ?? 0);
     if (shippingMethodId !== null) {
+      // Load and lock an active shipping method before calculating its cost.
       const [shippingMethods] = await connection.query(
         `SELECT shipping_cost, currency, free_shipping
          FROM shipping_methods
@@ -274,6 +304,7 @@ exports.checkout = async (req, res) => {
          FOR UPDATE`,
         [shippingMethodId]
       );
+      // Reject a shipping method that is missing or inactive.
       if (shippingMethods.length === 0) {
         await connection.rollback();
         transactionStarted = false;
@@ -283,6 +314,7 @@ exports.checkout = async (req, res) => {
         });
       }
 
+      // Apply free shipping or convert the method's cost to the checkout currency.
       const method = shippingMethods[0];
       shippingCost = Number(method.free_shipping)
         ? 0
@@ -293,6 +325,7 @@ exports.checkout = async (req, res) => {
         );
     }
 
+    // Reject negative, infinite, or otherwise invalid shipping charges.
     if (!Number.isFinite(shippingCost) || shippingCost < 0) {
       await connection.rollback();
       transactionStarted = false;
@@ -302,10 +335,13 @@ exports.checkout = async (req, res) => {
       });
     }
 
+    // Calculate the order subtotal and generate a unique order number.
     const totalAmount = Number(
       items.reduce((total, item) => total + item.price * item.quantity, 0).toFixed(2)
     );
     const orderNumber = `ORD-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+
+    // Create the order record with the selected address and shipping details.
     const [orderResult] = await connection.query(
       `INSERT INTO orders
        (user_id, order_number, total_amount, shipping_cost, shipping_method_id, currency,
@@ -323,6 +359,7 @@ exports.checkout = async (req, res) => {
     );
     const orderId = orderResult.insertId;
 
+    // Save each order line and decrement its inventory within the transaction.
     for (const item of items) {
       const gemstoneId = item.itemType === "gemstone" ? item.productId : null;
       const jewelleryId = item.itemType === "jewellery" ? item.productId : null;
@@ -342,23 +379,27 @@ exports.checkout = async (req, res) => {
         ]
       );
 
+      // Update the matching inventory table without allowing stock to go negative.
       const table = item.itemType === "jewellery" ? "jewellery" : "gemstones";
-      const stockColumn = item.itemType === "jewellery" ? "stock_quantity" : "stock";
+      const stockColumn = "stock_quantity";
       const [stockUpdate] = await connection.query(
         `UPDATE ${table}
          SET ${stockColumn} = ${stockColumn} - ?
          WHERE id = ? AND ${stockColumn} >= ?`,
         [item.quantity, item.productId, item.quantity]
       );
+      // Abort the transaction if inventory changed during checkout.
       if (stockUpdate.affectedRows !== 1) {
         throw new Error(`Stock changed while placing the order for ${item.name}.`);
       }
     }
 
+    // Clear the cart and commit the completed order and stock updates.
     await connection.query("DELETE FROM cart WHERE user_id = ?", [userId]);
     await connection.commit();
     transactionStarted = false;
 
+    // Return order totals, shipping details, and a formatted list of purchased items.
     return res.status(201).json({
       success: true,
       message: "Checkout completed successfully",
@@ -386,6 +427,7 @@ exports.checkout = async (req, res) => {
       }))
     });
   } catch (error) {
+    // Roll back any incomplete checkout before reporting the failure.
     if (connection && transactionStarted) {
       await connection.rollback();
     }
@@ -397,6 +439,7 @@ exports.checkout = async (req, res) => {
       error: error.message
     });
   } finally {
+    // Release the database connection regardless of the checkout result.
     connection?.release();
   }
 };

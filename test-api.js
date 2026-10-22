@@ -98,7 +98,7 @@ async function runTests() {
   try {
     const r = await request(
       { ...base, path: "/api/gemstones", method: "POST", headers: { "Content-Type": "application/json" } },
-      { category_id: 1, name: "Test Ruby", color: "Red", carat: 2.1, price: 1200, stock: 1, status: 1 }
+      { category_id: 1, name: "Test Ruby", color: "Red", carat: 2.1, price: 1200, stock_quantity: 1, status: 1 }
     );
     const ok = r.status === 201;
     log("POST /api/gemstones", ok, `HTTP ${r.status} - ${r.body.message}`);

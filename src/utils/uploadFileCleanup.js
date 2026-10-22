@@ -7,6 +7,7 @@ const managedDirectories = new Set([
   "jewellery",
   "certificates",
   "banners",
+  "blogs",
 ]);
 
 const getManagedUploadPath = (fileUrl) => {

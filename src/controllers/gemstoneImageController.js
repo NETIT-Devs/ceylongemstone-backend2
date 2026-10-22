@@ -4,10 +4,13 @@ const {
   removeUploadedFileObjects,
 } = require("../utils/uploadFileCleanup");
 
+// Delete an uploaded image only when no database record still references it.
 const removeUnreferencedGemstoneImage = async (imageUrl) => {
+  // Skip the reference lookup when there is no image URL.
   if (!imageUrl) return;
 
   try {
+    // Check whether another gemstone image record uses this file.
     const [references] = await db.query(
       "SELECT id FROM gemstone_images WHERE image_url = ? LIMIT 1",
       [imageUrl]
@@ -23,16 +26,16 @@ const removeUnreferencedGemstoneImage = async (imageUrl) => {
 // Upload gemstone image
 exports.uploadGemstoneImage = async (req, res) => {
   try {
-
+    // Log the parsed request and uploaded file to help diagnose upload issues.
     console.log("BODY:", req.body);
     console.log("FILE:", req.file);
 
-    // Safely destructure body — supports both multipart/form-data (file) and JSON (image_url)
+    // Read image details from either multipart form data or a JSON request.
     const { gemstone_id, image_type, is_primary, image_url: bodyImageUrl } = req.body || {};
 
     console.log("GEMSTONE ID:", gemstone_id);
 
-    // gemstone_id is the only required field
+    // Require a gemstone identifier and clean up an uploaded file on rejection.
     if (!gemstone_id) {
       if (req.file) await removeUploadedFileObjects([req.file]);
       return res.status(400).json({
@@ -41,12 +44,13 @@ exports.uploadGemstoneImage = async (req, res) => {
       });
     }
 
-    // Check gemstone
+    // Resolve either the database ID or public gemstone ID to a database record.
     const [gemstones] = await db.query(
       "SELECT id FROM gemstones WHERE id = ? OR gemstone_id = ?",
       [gemstone_id, gemstone_id]
     );
 
+    // Reject unknown gemstones and remove any file uploaded with the request.
     if (gemstones.length === 0) {
       if (req.file) await removeUploadedFileObjects([req.file]);
       return res.status(404).json({
@@ -57,7 +61,7 @@ exports.uploadGemstoneImage = async (req, res) => {
 
     const gemstoneDbId = gemstones[0].id;
 
-    // Resolve image URL: uploaded file > body image_url > null (image is optional)
+    // Prefer the uploaded file URL, then the URL supplied in the request body.
     let imageUrl = null;
     if (req.file) {
       imageUrl = `/uploads/gemstones/${req.file.filename}`;
@@ -65,6 +69,7 @@ exports.uploadGemstoneImage = async (req, res) => {
       imageUrl = bodyImageUrl;
     }
 
+    // Normalize supported boolean and string values for the primary-image flag.
     const primaryValue =
       is_primary === true ||
       is_primary === "true" ||
@@ -73,7 +78,7 @@ exports.uploadGemstoneImage = async (req, res) => {
         ? 1
         : 0;
 
-    // If this image is primary, remove primary status from other images
+    // Clear the existing primary flag so this gemstone has a single primary image.
     if (primaryValue === 1) {
       await db.query(
         "UPDATE gemstone_images SET is_primary = 0 WHERE gemstone_id = ?",
@@ -81,6 +86,7 @@ exports.uploadGemstoneImage = async (req, res) => {
       );
     }
 
+    // Save the image metadata and its resolved URL.
     const [result] = await db.query(
       `INSERT INTO gemstone_images
       (gemstone_id, image_url, image_type, is_primary)
@@ -93,6 +99,7 @@ exports.uploadGemstoneImage = async (req, res) => {
       ]
     );
 
+    // Return the new image record ID and URL.
     return res.status(201).json({
       success: true,
       message: "Gemstone image uploaded successfully",
@@ -101,6 +108,7 @@ exports.uploadGemstoneImage = async (req, res) => {
     });
 
   } catch (error) {
+    // Remove the newly uploaded file if saving the image record fails.
     if (req.file) await removeUploadedFileObjects([req.file]);
     console.error("Upload Gemstone Image Error:", error);
 
@@ -115,8 +123,10 @@ exports.uploadGemstoneImage = async (req, res) => {
 // Get all images of a gemstone
 exports.getGemstoneImages = async (req, res) => {
   try {
+    // Read the gemstone ID whose image gallery is requested.
     const { gemstone_id } = req.params;
 
+    // Fetch the gemstone's images with primary images listed first.
     const [images] = await db.query(
       `SELECT 
         id,
@@ -131,12 +141,14 @@ exports.getGemstoneImages = async (req, res) => {
       [gemstone_id]
     );
 
+    // Return the matching image records.
     return res.status(200).json({
       success: true,
       data: images
     });
 
   } catch (error) {
+    // Log query failures and return a server error response.
     console.error("Get Gemstone Images Error:", error);
 
     return res.status(500).json({
@@ -150,15 +162,17 @@ exports.getGemstoneImages = async (req, res) => {
 // Update gemstone image
 exports.updateGemstoneImage = async (req, res) => {
   try {
+    // Read the requested image changes and target image ID.
     const { image_type, is_primary } = req.body;
     const { id } = req.params;
 
-    // Check image
+    // Load the image record to confirm it exists and find its gemstone.
     const [images] = await db.query(
       "SELECT * FROM gemstone_images WHERE id = ?",
       [id]
     );
 
+    // Return 404 when the image ID does not match a record.
     if (images.length === 0) {
       return res.status(404).json({
         success: false,
@@ -168,6 +182,7 @@ exports.updateGemstoneImage = async (req, res) => {
 
     const gemstoneDbId = images[0].gemstone_id;
 
+    // Normalize supported boolean and string values for the primary-image flag.
     const primaryValue =
       is_primary === true ||
       is_primary === "true" ||
@@ -176,7 +191,7 @@ exports.updateGemstoneImage = async (req, res) => {
         ? 1
         : 0;
 
-    // If this image becomes primary
+    // Clear the current primary flag before assigning it to this image.
     if (primaryValue === 1) {
       await db.query(
         "UPDATE gemstone_images SET is_primary = 0 WHERE gemstone_id = ?",
@@ -184,6 +199,7 @@ exports.updateGemstoneImage = async (req, res) => {
       );
     }
 
+    // Update the image type and primary flag, preserving the current type if omitted.
     await db.query(
       `UPDATE gemstone_images
        SET image_type = ?, is_primary = ?
@@ -195,12 +211,14 @@ exports.updateGemstoneImage = async (req, res) => {
       ]
     );
 
+    // Confirm that the image record was updated.
     return res.status(200).json({
       success: true,
       message: "Gemstone image updated successfully",
     });
 
   } catch (error) {
+    // Log update failures and return a server error response.
     console.error("Update Gemstone Image Error:", error);
 
     return res.status(500).json({
@@ -214,14 +232,16 @@ exports.updateGemstoneImage = async (req, res) => {
 // Delete gemstone image
 exports.deleteGemstoneImage = async (req, res) => {
   try {
+    // Read the target image ID from the route.
     const { id } = req.params;
 
-    // Check image
+    // Load the image record so its URL can be cleaned up after deletion.
     const [images] = await db.query(
       "SELECT * FROM gemstone_images WHERE id = ?",
       [id]
     );
 
+    // Return 404 when the image ID does not match a record.
     if (images.length === 0) {
       return res.status(404).json({
         success: false,
@@ -229,19 +249,21 @@ exports.deleteGemstoneImage = async (req, res) => {
       });
     }
 
-    // Delete from database
+    // Remove the database record, then delete the file if it is no longer referenced.
     await db.query(
       "DELETE FROM gemstone_images WHERE id = ?",
       [id]
     );
     await removeUnreferencedGemstoneImage(images[0].image_url);
 
+    // Confirm that the image record was deleted.
     return res.status(200).json({
       success: true,
       message: "Gemstone image deleted successfully",
     });
 
   } catch (error) {
+    // Log deletion failures and return a server error response.
     console.error("Delete Gemstone Image Error:", error);
 
     return res.status(500).json({

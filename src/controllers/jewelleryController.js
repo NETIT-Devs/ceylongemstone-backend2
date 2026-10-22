@@ -6,16 +6,19 @@ const {
 
 // ─── Helper ──────────────────────────────────────────────────────────────────
 
+// Parse an integer value and use the fallback when parsing fails.
 const parseIntSafe = (value, fallback = null) => {
   const n = parseInt(value, 10);
   return Number.isNaN(n) ? fallback : n;
 };
 
+// Parse a decimal value and use the fallback when parsing fails.
 const parseFloatSafe = (value, fallback = null) => {
   const n = parseFloat(value);
   return Number.isNaN(n) ? fallback : n;
 };
 
+// Format database date values as YYYY-MM-DD, preserving missing values as null.
 const dateOnly = (value) => {
   if (!value) return null;
   if (value instanceof Date) {
@@ -24,10 +27,13 @@ const dateOnly = (value) => {
   return String(value).slice(0, 10);
 };
 
+// Delete an uploaded image only when no jewellery record still uses its URL.
 const removeUnreferencedJewelleryImage = async (imageUrl) => {
+  // Skip the reference lookup when no image URL was provided.
   if (!imageUrl) return;
 
   try {
+    // Check for other records that reference the same image before deleting it.
     const [references] = await db.query(
       "SELECT id FROM jewellery WHERE image_url = ? LIMIT 1",
       [imageUrl]
@@ -44,6 +50,7 @@ const removeUnreferencedJewelleryImage = async (imageUrl) => {
 
 exports.createJewellery = async (req, res) => {
   try {
+    // Read the submitted product details, stock, image, and offer settings.
     const {
       product_code,
       product_name,
@@ -60,9 +67,9 @@ exports.createJewellery = async (req, res) => {
       offer_start_date,
       offer_end_date,
       is_handcrafted,
-      status,
     } = req.body;
 
+    // Require a non-empty product name and clean up any uploaded file on rejection.
     if (!product_name || !product_name.trim()) {
       if (req.file) await removeUploadedFileObjects([req.file]);
       return res.status(400).json({
@@ -71,6 +78,7 @@ exports.createJewellery = async (req, res) => {
       });
     }
 
+    // Require a price before creating the jewellery item.
     if (price === undefined || price === null || price === "") {
       if (req.file) await removeUploadedFileObjects([req.file]);
       return res.status(400).json({
@@ -79,11 +87,12 @@ exports.createJewellery = async (req, res) => {
       });
     }
 
-    // Auto-generate product_code if not supplied
+    // Use the supplied product code or generate one when it is missing.
     const code =
       product_code?.trim() ||
       `JWL-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
+    // Normalize handcrafted and stock values, then derive the availability status.
     const isHandcrafted =
       is_handcrafted === true ||
       is_handcrafted === 1 ||
@@ -91,25 +100,15 @@ exports.createJewellery = async (req, res) => {
       is_handcrafted === "true"
         ? 1
         : 0;
+    const createdStockQuantity = parseIntSafe(stock_quantity, 1);
 
-    const validStatuses = [
-      "pending",
-      "approved",
-      "rejected",
-      "active",
-      "inactive",
-      "draft",
-    ];
-    const resolvedStatus = req.user.role === "ADMIN"
-      ? "pending"
-      : validStatuses.includes(status)
-        ? status
-        : "pending";
+    const resolvedStatus = createdStockQuantity <= 0 ? "out_of_stock" : "active";
     const offerRate =
       offer_rate === "" || offer_rate == null
         ? null
         : parseFloatSafe(offer_rate);
 
+    // Ensure any supplied offer rate is a valid percentage from 1 to 100.
     if (
       offer_rate !== "" &&
       offer_rate != null &&
@@ -121,6 +120,8 @@ exports.createJewellery = async (req, res) => {
         message: "offer_rate must be between 1 and 100.",
       });
     }
+
+    // Require valid offer dates in chronological order whenever an offer is set.
     if (
       offerRate !== null &&
       (!offer_start_date ||
@@ -134,8 +135,10 @@ exports.createJewellery = async (req, res) => {
       });
     }
 
+    // Associate the created record with the authenticated user when available.
     const createdBy = req.user?.id ?? null;
 
+    // Insert the jewellery item using parameterized values.
     const [result] = await db.query(
       `INSERT INTO jewellery
          (product_code, product_name, jewellery_type, gemstone_type, color,
@@ -153,7 +156,7 @@ exports.createJewellery = async (req, res) => {
         material?.trim() || null,
         parseFloatSafe(price),
         currency?.trim() || "USD",
-        parseIntSafe(stock_quantity, 1),
+        createdStockQuantity,
         req.file
           ? `/uploads/jewellery/${req.file.filename}`
           : image_url?.trim() || null,
@@ -166,6 +169,7 @@ exports.createJewellery = async (req, res) => {
       ]
     );
 
+    // Return the new record ID and product code.
     return res.status(201).json({
       success: true,
       message: "Jewellery item created successfully.",
@@ -173,6 +177,7 @@ exports.createJewellery = async (req, res) => {
       product_code: code,
     });
   } catch (error) {
+    // Clean up a new upload if creation fails, then report the database error.
     if (req.file) await removeUploadedFileObjects([req.file]);
     console.error("Create Jewellery Error:", error);
     if (error.code === "ER_DUP_ENTRY") {
@@ -193,8 +198,10 @@ exports.createJewellery = async (req, res) => {
 
 exports.getAllJewellery = async (req, res) => {
   try {
+    // Read optional filters for status and jewellery type.
     const { status, jewellery_type } = req.query;
 
+    // Build the query conditions and parameters only for supplied filters.
     let query = "SELECT * FROM jewellery";
     const conditions = [];
     const values = [];
@@ -212,6 +219,7 @@ exports.getAllJewellery = async (req, res) => {
     }
     query += " ORDER BY id DESC";
 
+    // Fetch matching products and normalize their offer dates for the response.
     const [rows] = await db.query(query, values);
     const jewellery = rows.map((item) => ({
       ...item,
@@ -219,12 +227,14 @@ exports.getAllJewellery = async (req, res) => {
       offer_end_date: dateOnly(item.offer_end_date),
     }));
 
+    // Return the filtered jewellery list and its result count.
     return res.status(200).json({
       success: true,
       count: jewellery.length,
       data: jewellery,
     });
   } catch (error) {
+    // Log query failures and return a server error response.
     console.error("Get All Jewellery Error:", error);
     return res.status(500).json({
       success: false,
@@ -238,12 +248,14 @@ exports.getAllJewellery = async (req, res) => {
 
 exports.getJewelleryById = async (req, res) => {
   try {
+    // Match the requested value against either the database ID or product code.
     const { id } = req.params;
     const [rows] = await db.query(
       "SELECT * FROM jewellery WHERE id = ? OR product_code = ?",
       [id, id]
     );
 
+    // Return 404 when no jewellery item matches the supplied identifier.
     if (!rows || rows.length === 0) {
       return res.status(404).json({
         success: false,
@@ -251,6 +263,7 @@ exports.getJewelleryById = async (req, res) => {
       });
     }
 
+    // Return the item with offer dates formatted for the API response.
     return res.status(200).json({
       success: true,
       data: {
@@ -260,6 +273,7 @@ exports.getJewelleryById = async (req, res) => {
       },
     });
   } catch (error) {
+    // Log query failures and return a server error response.
     console.error("Get Jewellery By Id Error:", error);
     return res.status(500).json({
       success: false,
@@ -273,11 +287,14 @@ exports.getJewelleryById = async (req, res) => {
 
 exports.updateJewellery = async (req, res) => {
   try {
+    // Read the target ID and load its current values for a partial update.
     const { id } = req.params;
     const [existing] = await db.query(
       "SELECT * FROM jewellery WHERE id = ?",
       [id]
     );
+
+    // Clean up the new upload and return 404 if the item does not exist.
     if (!existing || existing.length === 0) {
       if (req.file) await removeUploadedFileObjects([req.file]);
       return res.status(404).json({
@@ -303,18 +320,9 @@ exports.updateJewellery = async (req, res) => {
       offer_start_date,
       offer_end_date,
       is_handcrafted,
-      status,
     } = req.body;
 
-    const validStatuses = [
-      "pending",
-      "approved",
-      "rejected",
-      "active",
-      "inactive",
-      "draft",
-    ];
-
+    // Preserve existing values for omitted fields and normalize supplied values.
     const isHandcrafted =
       is_handcrafted !== undefined
         ? is_handcrafted === true ||
@@ -324,6 +332,10 @@ exports.updateJewellery = async (req, res) => {
           ? 1
           : 0
         : current.is_handcrafted;
+    const updatedStockQuantity = stock_quantity !== undefined
+      ? parseIntSafe(stock_quantity, current.stock_quantity)
+      : current.stock_quantity;
+    const updatedStatus = updatedStockQuantity <= 0 ? "out_of_stock" : "active";
     const updatedOfferRate =
       offer_rate !== undefined
         ? offer_rate === "" || offer_rate === null
@@ -339,6 +351,7 @@ exports.updateJewellery = async (req, res) => {
         ? offer_end_date || null
         : current.offer_end_date;
 
+    // Validate any supplied offer rate before applying the update.
     if (
       offer_rate !== undefined &&
       offer_rate !== "" &&
@@ -353,6 +366,8 @@ exports.updateJewellery = async (req, res) => {
         message: "offer_rate must be between 1 and 100.",
       });
     }
+
+    // Require both offer dates and ensure the end date is not before the start.
     if (
       updatedOfferRate !== null &&
       (!updatedOfferStartDate ||
@@ -366,6 +381,7 @@ exports.updateJewellery = async (req, res) => {
       });
     }
 
+    // Update the item while preserving fields omitted from the request.
     const [updateResult] = await db.query(
       `UPDATE jewellery SET
          product_code    = ?,
@@ -395,9 +411,7 @@ exports.updateJewellery = async (req, res) => {
         material !== undefined ? material?.trim() || null : current.material,
         price !== undefined ? parseFloatSafe(price, current.price) : current.price,
         currency?.trim() ?? current.currency,
-        stock_quantity !== undefined
-          ? parseIntSafe(stock_quantity, current.stock_quantity)
-          : current.stock_quantity,
+        updatedStockQuantity,
         req.file
           ? `/uploads/jewellery/${req.file.filename}`
           : image_url !== undefined
@@ -407,15 +421,12 @@ exports.updateJewellery = async (req, res) => {
         updatedOfferStartDate,
         updatedOfferEndDate,
         isHandcrafted,
-        req.user.role === "ADMIN"
-          ? current.status
-          : status !== undefined && validStatuses.includes(status)
-            ? status
-            : current.status,
+        updatedStatus,
         id,
       ]
     );
 
+    // Return 404 if no row was updated.
     if (updateResult.affectedRows === 0) {
       return res.status(404).json({
         success: false,
@@ -423,6 +434,7 @@ exports.updateJewellery = async (req, res) => {
       });
     }
 
+    // Remove the previous image only when it changed and is no longer referenced.
     const updatedImageUrl = req.file
       ? `/uploads/jewellery/${req.file.filename}`
       : image_url !== undefined
@@ -432,11 +444,13 @@ exports.updateJewellery = async (req, res) => {
       await removeUnreferencedJewelleryImage(current.image_url);
     }
 
+    // Confirm that the jewellery item was updated.
     return res.status(200).json({
       success: true,
       message: "Jewellery item updated successfully.",
     });
   } catch (error) {
+    // Clean up a new upload if the update fails and report the error.
     if (req.file) await removeUploadedFileObjects([req.file]);
     console.error("Update Jewellery Error:", error);
     if (error.code === "ER_DUP_ENTRY") {
@@ -456,51 +470,16 @@ exports.updateJewellery = async (req, res) => {
 // ─── UPDATE STATUS (APPROVE / REJECT / ETC) ──────────────────────────────────
 
 exports.updateJewelleryStatus = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { status } = req.body;
-    if (!["approved", "rejected"].includes(status)) {
-      return res.status(400).json({
-        success: false,
-        message: "Approval status must be approved or rejected.",
-      });
-    }
-
-    const [result] = await db.query(
-      "UPDATE jewellery SET status = ? WHERE id = ? AND status = 'pending'",
-      [status, id]
-    );
-
-    if (result.affectedRows === 0) {
-      const [rows] = await db.query(
-        "SELECT id FROM jewellery WHERE id = ?",
-        [id]
-      );
-      return res.status(rows.length ? 409 : 404).json({
-        success: false,
-        message: rows.length
-          ? "Jewellery item is no longer awaiting approval."
-          : "Jewellery item not found.",
-      });
-    }
-
-    return res.status(200).json({
-      success: true,
-      message: `Jewellery status updated to '${status}' successfully.`,
-      status,
-    });
-  } catch (error) {
-    console.error("Update Jewellery Status Error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to update jewellery status.",
-      error: error.message,
-    });
-  }
+  // Keep status derived from stock quantity rather than allowing manual changes.
+  return res.status(409).json({
+    success: false,
+    message: "Jewellery status is managed automatically from stock quantity.",
+  });
 };
 
 exports.getPendingJewellery = async (req, res) => {
   try {
+    // Fetch pending jewellery submissions, newest first.
     const [rows] = await db.query(
       `SELECT id, product_code, product_name, jewellery_type, gemstone_type,
               color, description, material, price, currency, stock_quantity,
@@ -510,12 +489,14 @@ exports.getPendingJewellery = async (req, res) => {
        ORDER BY created_at DESC, id DESC`
     );
 
+    // Return the pending items and their count.
     return res.status(200).json({
       success: true,
       count: rows.length,
       data: rows
     });
   } catch (error) {
+    // Log query failures and return a server error response.
     console.error("Fetch Pending Jewellery Error:", error);
     return res.status(500).json({
       success: false,
@@ -529,11 +510,14 @@ exports.getPendingJewellery = async (req, res) => {
 
 exports.deleteJewellery = async (req, res) => {
   try {
+    // Load the item and its image URL before deleting the database record.
     const { id } = req.params;
     const [existing] = await db.query(
       "SELECT image_url FROM jewellery WHERE id = ?",
       [id]
     );
+
+    // Return 404 when the requested item does not exist.
     if (!existing.length) {
       return res.status(404).json({
         success: false,
@@ -541,11 +525,13 @@ exports.deleteJewellery = async (req, res) => {
       });
     }
 
+    // Delete the jewellery record by its database ID.
     const [result] = await db.query(
       "DELETE FROM jewellery WHERE id = ?",
       [id]
     );
 
+    // Return 404 if no row was deleted.
     if (result.affectedRows === 0) {
       return res.status(404).json({
         success: false,
@@ -553,13 +539,16 @@ exports.deleteJewellery = async (req, res) => {
       });
     }
 
+    // Delete the image file only if no remaining item references it.
     await removeUnreferencedJewelleryImage(existing[0].image_url);
 
+    // Confirm that the item was deleted.
     return res.status(200).json({
       success: true,
       message: "Jewellery item deleted successfully.",
     });
   } catch (error) {
+    // Log deletion failures and return a server error response.
     console.error("Delete Jewellery Error:", error);
     return res.status(500).json({
       success: false,
@@ -573,7 +562,10 @@ exports.deleteJewellery = async (req, res) => {
 
 exports.getLowStockJewellery = async (req, res) => {
   try {
+    // Set the stock quantity that defines a low-stock jewellery item.
     const threshold = 3;
+
+    // Fetch matching items in ascending stock order.
     const [rows] = await db.query(
       `SELECT id, product_code, product_name, jewellery_type, stock_quantity, price, status
        FROM jewellery
@@ -582,6 +574,7 @@ exports.getLowStockJewellery = async (req, res) => {
       [threshold]
     );
 
+    // Return the low-stock items, threshold, and result count.
     return res.status(200).json({
       success: true,
       message: "Low stock jewellery items fetched successfully.",
@@ -590,6 +583,7 @@ exports.getLowStockJewellery = async (req, res) => {
       data: rows,
     });
   } catch (error) {
+    // Log query failures and return a server error response.
     console.error("Low Stock Jewellery Error:", error);
     return res.status(500).json({
       success: false,
